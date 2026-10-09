@@ -263,7 +263,10 @@ export class PencilEngine {
   }
 
   /**
-   * Draws interpolated pencil strokes with realistic spacing and graphite grain
+   * Draws interpolated pencil strokes with realistic spacing and graphite grain.
+   * Width and density are interpolated PER STAMP, not per segment pair:
+   * pair-constant ribbons show visible banding on fast strokes, where pairs
+   * span long distances.
    */
   private drawPencilSegment(p0: Point, p1: Point): void {
     const dx = p1.x - p0.x;
@@ -272,27 +275,29 @@ export class PencilEngine {
 
     if (dist === 0) return;
 
-    // Interpolation step based on radius (closer steps for finer lines)
-    const avgPressure = (p0.pressure + p1.pressure) / 2;
+    const radiusAt = (pressure: number): number =>
+      Math.max(1, this.baseRadius * this.dpr * (0.4 + pressure * 1.6));
+    const alphaAt = (pressure: number, altitude: number): number =>
+      altitude < 0.65
+        ? Math.min(1.0, 0.15 + pressure * 0.25) // diffuse shading
+        : Math.min(1.0, 0.35 + pressure * 0.65); // crisp line
+
+    // Step from the widest radius so spacing stays tight everywhere.
+    const rMax = Math.max(radiusAt(p0.pressure), radiusAt(p1.pressure));
     const avgAltitude = (p0.altitudeAngle + p1.altitudeAngle) / 2;
-    const radius = Math.max(1, this.baseRadius * this.dpr * (0.4 + avgPressure * 1.6));
-
-    // For tilt shading: step is larger, stamp is wider
     const isShading = avgAltitude < 0.65;
-    const stepSize = isShading ? Math.max(2, radius * 0.8) : Math.max(1.2, radius * 0.35);
+    const stepSize = isShading ? Math.max(2, rMax * 0.8) : Math.max(1.2, rMax * 0.35);
     const steps = Math.max(1, Math.ceil(dist / stepSize));
-
-    const stamp = PencilTexture.createStamp(radius, avgAltitude);
-    const baseAlpha = isShading
-      ? (0.15 + avgPressure * 0.25) // diffuse shading
-      : (0.35 + avgPressure * 0.65); // crisp line
 
     this.ctx.save();
     this.ctx.globalCompositeOperation = 'multiply';
-    this.ctx.globalAlpha = Math.min(1.0, baseAlpha);
 
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
+      const pressure = p0.pressure + (p1.pressure - p0.pressure) * t;
+      const altitude = p0.altitudeAngle + (p1.altitudeAngle - p0.altitudeAngle) * t;
+      const stamp = PencilTexture.createStamp(radiusAt(pressure), altitude);
+      this.ctx.globalAlpha = alphaAt(pressure, altitude);
       const x = p0.x + dx * t;
       const y = p0.y + dy * t;
       this.ctx.drawImage(stamp, x - stamp.width / 2, y - stamp.height / 2);

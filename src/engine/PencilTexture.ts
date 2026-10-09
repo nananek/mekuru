@@ -17,12 +17,22 @@ export class PencilTexture {
     radius: number,
     altitudeAngle: number
   ): HTMLCanvasElement {
+    // Pen tilt: altitudeAngle is 0 (flat on table) to Math.PI / 2 (perpendicular).
+    // When tilted flat, the tip flattens into a wider ellipse. The expansion
+    // is capped: tilt sensors can spike at contact, and an unbounded ellipse
+    // reads as a stray dash at stroke starts.
     const isShading = altitudeAngle < 0.65;
-    const key = `${Math.round(radius * 2) / 2}:${isShading ? 1 : 0}`;
+    const tiltScale = isShading
+      ? Math.min(2.0, 1.0 + (1.0 - altitudeAngle / 0.65) * 2.5)
+      : 1.0;
+
+    // Fine-grained key: coarse quantization previously returned wrong-sized
+    // stamps mid-stroke, which read as stripes along the line.
+    const key = `${radius.toFixed(1)}:${tiltScale.toFixed(2)}`;
     const cached = this.stampCache.get(key);
     if (cached) return cached;
 
-    const stamp = this.buildStamp(radius, altitudeAngle);
+    const stamp = this.buildStamp(radius, tiltScale);
     if (this.stampCache.size >= this.STAMP_CACHE_LIMIT) {
       const oldest = this.stampCache.keys().next();
       if (!oldest.done) this.stampCache.delete(oldest.value);
@@ -33,16 +43,8 @@ export class PencilTexture {
 
   private static buildStamp(
     radius: number,
-    altitudeAngle: number
+    tiltScale: number
   ): HTMLCanvasElement {
-    // Pen tilt: altitudeAngle is 0 (flat on table) to Math.PI / 2 (perpendicular).
-    // When tilted flat, the tip flattens into a wider ellipse. The expansion
-    // is capped: tilt sensors can spike at contact, and an unbounded ellipse
-    // reads as a stray dash at stroke starts.
-    const isShading = altitudeAngle < 0.65;
-    const tiltScale = isShading
-      ? Math.min(2.0, 1.0 + (1.0 - altitudeAngle / 0.65) * 2.5)
-      : 1.0;
 
     const width = Math.max(2, Math.round(radius * 2 * tiltScale));
     const height = Math.max(2, Math.round(radius * 2));

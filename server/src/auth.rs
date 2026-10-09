@@ -1,3 +1,4 @@
+use crate::db::{Db, User};
 use axum::{
     extract::{Json, State},
     http::{HeaderMap, StatusCode},
@@ -6,7 +7,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use webauthn_rs::prelude::*;
-use crate::db::{Db, User};
 
 #[derive(Clone)]
 pub struct AuthState {
@@ -57,21 +57,20 @@ pub struct AuthMeResponse {
 }
 
 pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
-    if let Some(auth) = headers.get("authorization") {
-        if let Ok(val) = auth.to_str() {
-            if let Some(token) = val.strip_prefix("Bearer ") {
-                return Some(token.trim().to_string());
-            }
-        }
+    if let Some(auth) = headers.get("authorization")
+        && let Ok(val) = auth.to_str()
+        && let Some(token) = val.strip_prefix("Bearer ")
+    {
+        return Some(token.trim().to_string());
     }
     // Also check Cookie header
-    if let Some(cookie) = headers.get("cookie") {
-        if let Ok(cookie_str) = cookie.to_str() {
-            for part in cookie_str.split(';') {
-                let part = part.trim();
-                if let Some(token) = part.strip_prefix("mekuru_session=") {
-                    return Some(token.trim().to_string());
-                }
+    if let Some(cookie) = headers.get("cookie")
+        && let Ok(cookie_str) = cookie.to_str()
+    {
+        for part in cookie_str.split(';') {
+            let part = part.trim();
+            if let Some(token) = part.strip_prefix("mekuru_session=") {
+                return Some(token.trim().to_string());
             }
         }
     }
@@ -84,11 +83,17 @@ pub async fn register_start(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let username = payload.username.trim();
     if username.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "ユーザー名を入力してください".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "ユーザー名を入力してください".into(),
+        ));
     }
 
     let user = state.db.get_or_create_user(username).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB error: {}", e),
+        )
     })?;
 
     let user_id = uuid::Uuid::parse_str(&user.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
@@ -103,12 +108,25 @@ pub async fn register_start(
 
     let (creation_challenge, reg_state) = state
         .webauthn
-        .start_passkey_registration(user_id, &user.username, &user.username, Some(exclude_credentials))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("WebAuthn error: {:?}", e)))?;
+        .start_passkey_registration(
+            user_id,
+            &user.username,
+            &user.username,
+            Some(exclude_credentials),
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("WebAuthn error: {:?}", e),
+            )
+        })?;
 
     let challenge_id = uuid::Uuid::new_v4().to_string();
     let reg_json = serde_json::to_string(&reg_state).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("JSON error: {}", e))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("JSON error: {}", e),
+        )
     })?;
 
     let now = std::time::SystemTime::now()
@@ -119,7 +137,12 @@ pub async fn register_start(
     state
         .db
         .save_challenge(&challenge_id, &reg_json, Some(&user.id), now + 300)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?;
 
     Ok(Json(RegisterStartResponse {
         challenge_id,
@@ -134,34 +157,66 @@ pub async fn register_finish(
     let (reg_json, user_id) = state
         .db
         .get_and_delete_challenge(&payload.challenge_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Challenge expired or invalid".to_string()))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Challenge expired or invalid".to_string(),
+            )
+        })?;
 
-    let user_id = user_id.ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing user_id".to_string()))?;
+    let user_id =
+        user_id.ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing user_id".to_string()))?;
 
-    let reg_state: PasskeyRegistration = serde_json::from_str(&reg_json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Malformed reg_state: {}", e)))?;
+    let reg_state: PasskeyRegistration = serde_json::from_str(&reg_json).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Malformed reg_state: {}", e),
+        )
+    })?;
 
     let passkey = state
         .webauthn
         .finish_passkey_registration(&payload.credential, &reg_state)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("WebAuthn registration failed: {:?}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("WebAuthn registration failed: {:?}", e),
+            )
+        })?;
 
     let cred_id_b64 = serde_json::to_value(passkey.cred_id())
         .map(|v| v.as_str().unwrap_or("").to_string())
         .unwrap_or_default();
 
-    let passkey_json = serde_json::to_string(&passkey)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("JSON error: {}", e)))?;
+    let passkey_json = serde_json::to_string(&passkey).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("JSON error: {}", e),
+        )
+    })?;
 
     state
         .db
         .save_passkey(&user_id, &cred_id_b64, &passkey_json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?;
 
     // Create session
     let token = state.db.create_session(&user_id, 30 * 86400).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("Session error: {}", e))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Session error: {}", e),
+        )
     })?;
 
     let user = state.db.get_user_by_id(&user_id).unwrap().unwrap();
@@ -169,9 +224,12 @@ pub async fn register_finish(
     let mut headers = HeaderMap::new();
     headers.insert(
         "Set-Cookie",
-        format!("mekuru_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000", token)
-            .parse()
-            .unwrap(),
+        format!(
+            "mekuru_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000",
+            token
+        )
+        .parse()
+        .unwrap(),
     );
 
     Ok((
@@ -194,14 +252,14 @@ pub async fn login_start(
 
     if let Some(username) = payload.username {
         let username = username.trim();
-        if !username.is_empty() {
-            if let Ok(user) = state.db.get_or_create_user(username) {
-                target_user_id = Some(user.id.clone());
-                let list = state.db.get_passkeys_for_user(&user.id).unwrap_or_default();
-                for json in list {
-                    if let Ok(pk) = serde_json::from_str::<Passkey>(&json) {
-                        passkeys.push(pk);
-                    }
+        if !username.is_empty()
+            && let Ok(user) = state.db.get_or_create_user(username)
+        {
+            target_user_id = Some(user.id.clone());
+            let list = state.db.get_passkeys_for_user(&user.id).unwrap_or_default();
+            for json in list {
+                if let Ok(pk) = serde_json::from_str::<Passkey>(&json) {
+                    passkeys.push(pk);
                 }
             }
         }
@@ -210,11 +268,19 @@ pub async fn login_start(
     let (rc, auth_state) = state
         .webauthn
         .start_passkey_authentication(&passkeys)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("WebAuthn error: {:?}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("WebAuthn error: {:?}", e),
+            )
+        })?;
 
     let challenge_id = uuid::Uuid::new_v4().to_string();
     let auth_json = serde_json::to_string(&auth_state).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("JSON error: {}", e))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("JSON error: {}", e),
+        )
     })?;
 
     let now = std::time::SystemTime::now()
@@ -224,8 +290,18 @@ pub async fn login_start(
 
     state
         .db
-        .save_challenge(&challenge_id, &auth_json, target_user_id.as_deref(), now + 300)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?;
+        .save_challenge(
+            &challenge_id,
+            &auth_json,
+            target_user_id.as_deref(),
+            now + 300,
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?;
 
     Ok(Json(LoginStartResponse {
         challenge_id,
@@ -240,41 +316,73 @@ pub async fn login_finish(
     let (auth_json, maybe_user_id) = state
         .db
         .get_and_delete_challenge(&payload.challenge_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Challenge expired or invalid".to_string()))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Challenge expired or invalid".to_string(),
+            )
+        })?;
 
-    let auth_state: PasskeyAuthentication = serde_json::from_str(&auth_json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Malformed auth_state: {}", e)))?;
+    let auth_state: PasskeyAuthentication = serde_json::from_str(&auth_json).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Malformed auth_state: {}", e),
+        )
+    })?;
 
     let cred_id_b64 = payload.credential.id.clone();
     let user: User = if let Some((u, _)) = state
         .db
         .find_user_by_credential_id(&cred_id_b64)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?
-    {
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })? {
         u
     } else if let Some(uid) = maybe_user_id {
         state.db.get_user_by_id(&uid).unwrap().unwrap()
     } else {
-        return Err((StatusCode::BAD_REQUEST, "No passkey registered for this credential".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "No passkey registered for this credential".into(),
+        ));
     };
 
     let auth_res = state
         .webauthn
         .finish_passkey_authentication(&payload.credential, &auth_state)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("WebAuthn login failed: {:?}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("WebAuthn login failed: {:?}", e),
+            )
+        })?;
 
     // Create session
     let token = state.db.create_session(&user.id, 30 * 86400).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("Session error: {}", e))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Session error: {}", e),
+        )
     })?;
 
     let mut headers = HeaderMap::new();
     headers.insert(
         "Set-Cookie",
-        format!("mekuru_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000", token)
-            .parse()
-            .unwrap(),
+        format!(
+            "mekuru_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000",
+            token
+        )
+        .parse()
+        .unwrap(),
     );
 
     Ok((
@@ -299,7 +407,12 @@ pub async fn auth_me(
     let user = state
         .db
         .get_session_user(&token)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Session expired".to_string()))?;
 
     Ok(Json(AuthMeResponse {
@@ -319,7 +432,9 @@ pub async fn auth_logout(
     let mut headers = HeaderMap::new();
     headers.insert(
         "Set-Cookie",
-        "mekuru_session=; Path=/; HttpOnly; Max-Age=0".parse().unwrap(),
+        "mekuru_session=; Path=/; HttpOnly; Max-Age=0"
+            .parse()
+            .unwrap(),
     );
 
     Ok((headers, Json(serde_json::json!({ "success": true }))))

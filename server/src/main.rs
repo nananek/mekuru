@@ -44,15 +44,11 @@ enum Commands {
         port: Option<u16>,
     },
     /// Resets all registered passkeys for a user via CLI
-    ResetPasskey {
-        username: String,
-    },
+    ResetPasskey { username: String },
     /// Lists all registered users and their passkey counts
     ListUsers,
     /// Creates a user account in database
-    CreateUser {
-        username: String,
-    },
+    CreateUser { username: String },
 }
 
 #[tokio::main]
@@ -66,7 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::ResetPasskey { username }) => {
             match database.reset_passkeys_for_user(&username) {
                 Ok(count) => {
-                    println!("ユーザー '{}' のパスキーをリセットしました（削除数: {}）。新しいパスキーを登録できます。", username, count);
+                    println!(
+                        "ユーザー '{}' のパスキーをリセットしました（削除数: {}）。新しいパスキーを登録できます。",
+                        username, count
+                    );
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     eprintln!("エラー: ユーザー '{}' が見つかりませんでした。", username);
@@ -81,24 +80,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Commands::ListUsers) => {
             let users = database.list_users()?;
-            println!("{:<36} {:<20} {:<10} {:<24}", "ID", "USERNAME", "PASSKEYS", "CREATED AT");
+            println!(
+                "{:<36} {:<20} {:<10} {:<24}",
+                "ID", "USERNAME", "PASSKEYS", "CREATED AT"
+            );
             println!("{}", "-".repeat(95));
             for (u, pk_count) in users {
-                println!("{:<36} {:<20} {:<10} {:<24}", u.id, u.username, pk_count, u.created_at);
+                println!(
+                    "{:<36} {:<20} {:<10} {:<24}",
+                    u.id, u.username, pk_count, u.created_at
+                );
             }
             return Ok(());
         }
         Some(Commands::CreateUser { username }) => {
             let user = database.get_or_create_user(&username)?;
-            println!("ユーザーを作成しました: ID={}, Username={}", user.id, user.username);
+            println!(
+                "ユーザーを作成しました: ID={}, Username={}",
+                user.id, user.username
+            );
             return Ok(());
         }
         Some(Commands::Serve { port }) => {
             let final_port = port.unwrap_or(cli.port);
-            run_server(database, &cli.host, final_port, cli.static_dir, &cli.rp_id, &cli.rp_origin).await?;
+            run_server(
+                database,
+                &cli.host,
+                final_port,
+                cli.static_dir,
+                &cli.rp_id,
+                &cli.rp_origin,
+            )
+            .await?;
         }
         None => {
-            run_server(database, &cli.host, cli.port, cli.static_dir, &cli.rp_id, &cli.rp_origin).await?;
+            run_server(
+                database,
+                &cli.host,
+                cli.port,
+                cli.static_dir,
+                &cli.rp_id,
+                &cli.rp_origin,
+            )
+            .await?;
         }
     }
 
@@ -124,13 +148,14 @@ async fn run_server(
         webauthn,
     };
 
-    let sketch_state = sketch::SketchState {
-        db: db.clone(),
-    };
+    let sketch_state = sketch::SketchState { db: db.clone() };
 
     let auth_router = axum::Router::new()
         .route("/register-start", axum::routing::post(auth::register_start))
-        .route("/register-finish", axum::routing::post(auth::register_finish))
+        .route(
+            "/register-finish",
+            axum::routing::post(auth::register_finish),
+        )
         .route("/login-start", axum::routing::post(auth::login_start))
         .route("/login-finish", axum::routing::post(auth::login_finish))
         .route("/me", axum::routing::get(auth::auth_me))
@@ -141,7 +166,10 @@ async fn run_server(
         .route("/", axum::routing::get(sketch::list_sketches))
         .route("/", axum::routing::post(sketch::upload_sketch))
         .route("/{id}/image", axum::routing::get(sketch::get_sketch_image))
-        .route("/{id}/thumbnail", axum::routing::get(sketch::get_sketch_thumbnail))
+        .route(
+            "/{id}/thumbnail",
+            axum::routing::get(sketch::get_sketch_thumbnail),
+        )
         .route("/{id}", axum::routing::delete(sketch::delete_sketch))
         .with_state(sketch_state);
 

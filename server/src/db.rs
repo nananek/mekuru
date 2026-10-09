@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -25,10 +25,10 @@ pub struct SketchMeta {
 impl Db {
     pub fn init<P: AsRef<Path>>(path: P) -> Result<Self> {
         let parent = path.as_ref().parent();
-        if let Some(p) = parent {
-            if !p.as_os_str().is_empty() {
-                let _ = std::fs::create_dir_all(p);
-            }
+        if let Some(p) = parent
+            && !p.as_os_str().is_empty()
+        {
+            let _ = std::fs::create_dir_all(p);
         }
 
         let conn = Connection::open(path)?;
@@ -90,7 +90,8 @@ impl Db {
     // --- User management ---
     pub fn get_or_create_user(&self, username: &str) -> Result<User> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, username, created_at FROM users WHERE username = ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT id, username, created_at FROM users WHERE username = ?1")?;
         let mut rows = stmt.query(params![username])?;
 
         if let Some(row) = rows.next()? {
@@ -165,7 +166,8 @@ impl Db {
 
         if let Some(row) = rows.next()? {
             let user_id: String = row.get(0)?;
-            let deleted = conn.execute("DELETE FROM passkeys WHERE user_id = ?1", params![user_id])?;
+            let deleted =
+                conn.execute("DELETE FROM passkeys WHERE user_id = ?1", params![user_id])?;
             // Also invalidate any sessions for this user
             let _ = conn.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id]);
             Ok(deleted)
@@ -221,7 +223,13 @@ impl Db {
     }
 
     // --- Challenges ---
-    pub fn save_challenge(&self, challenge_id: &str, challenge_data: &str, user_id: Option<&str>, expires_at: i64) -> Result<()> {
+    pub fn save_challenge(
+        &self,
+        challenge_id: &str,
+        challenge_data: &str,
+        user_id: Option<&str>,
+        expires_at: i64,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO auth_challenges (challenge_id, challenge_data, user_id, expires_at)
@@ -231,7 +239,10 @@ impl Db {
         Ok(())
     }
 
-    pub fn get_and_delete_challenge(&self, challenge_id: &str) -> Result<Option<(String, Option<String>)>> {
+    pub fn get_and_delete_challenge(
+        &self,
+        challenge_id: &str,
+    ) -> Result<Option<(String, Option<String>)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT challenge_data, user_id, expires_at FROM auth_challenges WHERE challenge_id = ?1",
@@ -241,7 +252,10 @@ impl Db {
             let data: String = row.get(0)?;
             let user_id: Option<String> = row.get(1)?;
             let expires_at: i64 = row.get(2)?;
-            let _ = conn.execute("DELETE FROM auth_challenges WHERE challenge_id = ?1", params![challenge_id]);
+            let _ = conn.execute(
+                "DELETE FROM auth_challenges WHERE challenge_id = ?1",
+                params![challenge_id],
+            );
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -265,7 +279,8 @@ impl Db {
         let expires_at = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() + ttl_secs) as i64;
+            .as_secs()
+            + ttl_secs) as i64;
 
         conn.execute(
             "INSERT INTO sessions (token, user_id, expires_at) VALUES (?1, ?2, ?3)",
@@ -387,8 +402,7 @@ fn chrono_now() -> String {
         .unwrap()
         .as_secs();
     // Return standard ISO format
-    let dt = chrono_from_secs(now);
-    dt
+    chrono_from_secs(now)
 }
 
 fn chrono_from_secs(secs: u64) -> String {
@@ -402,7 +416,11 @@ fn chrono_from_secs(secs: u64) -> String {
     let mut year = 1970;
     let mut d = days;
     loop {
-        let leap = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 1 } else { 0 };
+        let leap = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+            1
+        } else {
+            0
+        };
         let days_in_year = 365 + leap;
         if d >= days_in_year {
             d -= days_in_year;
@@ -411,7 +429,11 @@ fn chrono_from_secs(secs: u64) -> String {
             break;
         }
     }
-    let leap = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 1 } else { 0 };
+    let leap = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+        1
+    } else {
+        0
+    };
     let month_days = [31, 28 + leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut month = 1;
     for &md in &month_days {
@@ -424,5 +446,8 @@ fn chrono_from_secs(secs: u64) -> String {
     }
     let day = d + 1;
 
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, hours, mins, s)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hours, mins, s
+    )
 }

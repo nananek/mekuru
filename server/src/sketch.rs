@@ -1,11 +1,11 @@
-use axum::{
-    extract::{Multipart, Path, State},
-    http::{header, HeaderMap, StatusCode},
-    response::IntoResponse,
-    Json,
-};
 use crate::auth::extract_session_token;
 use crate::db::Db;
+use axum::{
+    Json,
+    extract::{Multipart, Path, State},
+    http::{HeaderMap, StatusCode, header},
+    response::IntoResponse,
+};
 
 #[derive(Clone)]
 pub struct SketchState {
@@ -63,16 +63,26 @@ pub async fn upload_sketch(
         }
     }
 
-    let image = image_data.ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing image file".to_string()))?;
+    let image =
+        image_data.ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing image file".to_string()))?;
     let thumb = thumbnail_data.unwrap_or_else(|| image.clone()); // fallback
-    let date_str = created_at.unwrap_or_else(|| {
-        chrono_now()
-    });
+    let date_str = created_at.unwrap_or_else(chrono_now);
 
     let sketch_id = state
         .db
-        .save_sketch(user_id.as_deref(), timer_duration_sec, &date_str, &image, &thumb)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?;
+        .save_sketch(
+            user_id.as_deref(),
+            timer_duration_sec,
+            &date_str,
+            &image,
+            &thumb,
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?;
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -91,10 +101,12 @@ pub async fn list_sketches(
     };
 
     let user_id = current_user.map(|u| u.id);
-    let list = state
-        .db
-        .list_sketches(user_id.as_deref())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?;
+    let list = state.db.list_sketches(user_id.as_deref()).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB error: {}", e),
+        )
+    })?;
 
     Ok(Json(list))
 }
@@ -106,11 +118,19 @@ pub async fn get_sketch_image(
     let img = state
         .db
         .get_sketch_image(id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Sketch not found".to_string()))?;
 
     Ok((
-        [(header::CONTENT_TYPE, "image/webp"), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")],
+        [
+            (header::CONTENT_TYPE, "image/webp"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
         img,
     ))
 }
@@ -122,11 +142,19 @@ pub async fn get_sketch_thumbnail(
     let thumb = state
         .db
         .get_sketch_thumbnail(id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Thumbnail not found".to_string()))?;
 
     Ok((
-        [(header::CONTENT_TYPE, "image/webp"), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")],
+        [
+            (header::CONTENT_TYPE, "image/webp"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
         thumb,
     ))
 }
@@ -135,10 +163,12 @@ pub async fn delete_sketch(
     State(state): State<SketchState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let deleted = state
-        .db
-        .delete_sketch(id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)))?;
+    let deleted = state.db.delete_sketch(id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB error: {}", e),
+        )
+    })?;
 
     if deleted {
         Ok(Json(serde_json::json!({ "success": true })))

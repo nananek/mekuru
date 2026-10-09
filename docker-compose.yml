@@ -1,7 +1,6 @@
-version: '3.8'
-
 services:
   mekuru:
+    image: ghcr.io/nananek/mekuru:latest
     build:
       context: .
       dockerfile: Dockerfile

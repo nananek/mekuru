@@ -7,6 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use webauthn_rs::prelude::*;
+use webauthn_rs_core::proto::ResidentKeyRequirement;
 
 #[derive(Clone)]
 pub struct AuthState {
@@ -141,7 +142,7 @@ pub async fn register_start(
         }
     }
 
-    let (creation_challenge, reg_state) = state
+    let (mut creation_challenge, reg_state) = state
         .webauthn
         .start_passkey_registration(
             user_id,
@@ -155,6 +156,20 @@ pub async fn register_start(
                 format!("WebAuthn error: {:?}", e),
             )
         })?;
+
+    // webauthn-rs requests `residentKey: discouraged` here, which makes
+    // providers (e.g. Bitwarden) create server-side (non-discoverable)
+    // credentials. Those can never appear in usernameless login, so force
+    // client-side discoverable credentials. The stored registration state
+    // is unaffected (finish does not re-check this flag).
+    if let Some(sel) = creation_challenge
+        .public_key
+        .authenticator_selection
+        .as_mut()
+    {
+        sel.resident_key = Some(ResidentKeyRequirement::Required);
+        sel.require_resident_key = true;
+    }
 
     let challenge_id = uuid::Uuid::new_v4().to_string();
     let reg_json = serde_json::to_string(&reg_state).map_err(|e| {

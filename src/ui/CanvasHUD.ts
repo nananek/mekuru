@@ -4,7 +4,7 @@ export interface CanvasHUDCallbacks {
   onMekuru: () => void;
   onUndo: () => void;
   onOpenGallery: () => void;
-  onOpenAuth: () => void;
+  onOpenSettings: () => void;
 }
 
 export class CanvasHUD {
@@ -46,13 +46,12 @@ export class CanvasHUD {
             </button>
           </div>
 
-          <!-- Top Right: Gallery & Cloud Sync / Passkey Account -->
+          <!-- Top Right: Gallery & Settings -->
           <div class="flex items-center gap-2 pointer-events-auto">
-            <button id="hud-auth-btn" title="アカウント / パスキー認証" class="hud-btn p-2 rounded-full bg-white/80 border border-black/10 shadow-sm text-[#1a1a1a]">
+            <button id="hud-settings-btn" title="設定（アカウント / アプリ更新）" class="hud-btn p-2 rounded-full bg-white/80 border border-black/10 shadow-sm text-[#1a1a1a]">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 2l-2 2m-1-1l-2 2M11 7a5 5 0 0 0-5 5c0 2.76 2.24 5 5 5s5-2.24 5-5a5 5 0 0 0-5-5z"></path>
-                <path d="M15.5 15.5L21 21"></path>
-                <path d="M18.5 18.5l1.5 1.5"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
               </svg>
             </button>
             <button id="hud-gallery-btn" title="スケッチ一覧（ギャラリー）" class="hud-btn flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/80 border border-black/10 shadow-sm text-xs text-[#1a1a1a]">
@@ -100,7 +99,7 @@ export class CanvasHUD {
     this.mekuruBtn = document.getElementById('hud-mekuru-btn') as HTMLButtonElement;
 
     const galleryBtn = document.getElementById('hud-gallery-btn') as HTMLButtonElement;
-    const authBtn = document.getElementById('hud-auth-btn') as HTMLButtonElement;
+    const settingsBtn = document.getElementById('hud-settings-btn') as HTMLButtonElement;
 
     this.timerBtn.addEventListener('click', () => {
       this.timer.cycleNextPreset();
@@ -127,8 +126,8 @@ export class CanvasHUD {
       this.callbacks.onOpenGallery();
     });
 
-    authBtn.addEventListener('click', () => {
-      this.callbacks.onOpenAuth();
+    settingsBtn.addEventListener('click', () => {
+      this.callbacks.onOpenSettings();
     });
   }
 

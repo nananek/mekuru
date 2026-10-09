@@ -143,7 +143,7 @@ document.addEventListener('DOMContentLoaded', () => {
     onOpenGallery: () => {
       new GalleryModal(galleryRoot, viewerRoot, () => {});
     },
-    onOpenAuth: () => {
+    onOpenSettings: () => {
       new AuthModal(galleryRoot, () => {});
     },
   });

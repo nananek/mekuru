@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ja" class="h-full w-full select-none overflow-hidden bg-[#fdfbf7]">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Mekuru（めくる）- ミニマル・クロッキー</title>
+    <meta name="description" content="Apple Pencil 特化型 ミニマル・クロッキー PWA。描いて、めくる。" />
+    
+    <!-- PWA & iOS Safari full-screen standalone meta tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Mekuru" />
+    <meta name="theme-color" content="#fdfbf7" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body class="h-full w-full overflow-hidden bg-[#fdfbf7] text-[#1a1a1a] m-0 p-0 fixed inset-0 touch-none">
+    <div id="app" class="relative w-full h-full overflow-hidden">
+      <!-- Fullscreen Drawing Canvas -->
+      <canvas id="sketch-canvas" class="absolute inset-0 w-full h-full block cursor-crosshair touch-none"></canvas>
+
+      <!-- Flash Notification Overlay for Timer completion -->
+      <div id="timer-flash" class="pointer-events-none absolute inset-0 bg-white opacity-0 transition-opacity duration-300 z-30"></div>
+
+      <!-- Minimal Corner HUD Controls -->
+      <div id="hud-container" class="pointer-events-none absolute inset-0 z-20"></div>
+
+      <!-- Gallery Modal Root -->
+      <div id="gallery-root" class="z-40"></div>
+
+      <!-- Fullscreen Viewer Modal Root -->
+      <div id="viewer-root" class="z-50"></div>
+
+      <!-- Notification Toast Container -->
+      <div id="toast-container" class="pointer-events-none fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

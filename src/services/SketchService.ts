@@ -22,7 +22,7 @@ export class SketchService {
         throw new Error('Failed to create thumbnail blob');
       }
 
-      // 3. Save to Dexie IndexedDB
+      // 3. Save to Dexie IndexedDB (outbox: deleted once the server confirms)
       const sketch: Sketch = {
         createdAt: new Date(),
         timerDurationSec,

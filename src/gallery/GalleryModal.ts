@@ -1,5 +1,4 @@
-import type { Sketch } from '../db/database';
-import { SketchService } from '../services/SketchService';
+import { SyncService, type GalleryItem } from '../services/SyncService';
 import { ViewerModal } from './ViewerModal';
 import { Toast } from '../ui/Toast';
 
@@ -7,7 +6,8 @@ export class GalleryModal {
   private container: HTMLElement;
   private viewerRoot: HTMLElement;
   private onCloseCallback: () => void;
-  private sketches: Sketch[] = [];
+  private sketches: GalleryItem[] = [];
+  private serverAvailable = false;
 
   constructor(container: HTMLElement, viewerRoot: HTMLElement, onClose: () => void) {
     this.container = container;
@@ -18,13 +18,16 @@ export class GalleryModal {
   }
 
   public async loadAndRender(): Promise<void> {
-    this.sketches = await SketchService.getAllSketches();
+    const { items, serverAvailable } = await SyncService.getGalleryItems();
+    this.sketches = items;
+    this.serverAvailable = serverAvailable;
     this.render();
     this.attachEvents();
   }
 
   private render(): void {
     const totalCount = this.sketches.length;
+    const pendingCount = this.sketches.filter((s) => s.pending).length;
 
     let gridHtml = '';
     if (totalCount === 0) {
@@ -41,17 +44,20 @@ export class GalleryModal {
     } else {
       const items = this.sketches
         .map((sketch, index) => {
-          const thumbUrl = URL.createObjectURL(sketch.thumbnailBlob);
+          const thumbUrl = sketch.thumbUrl;
           const date = new Date(sketch.createdAt);
           const timeStr = `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
           const timerLabel = sketch.timerDurationSec > 0 ? `${sketch.timerDurationSec}s` : '手動';
+          const pendingBadge = sketch.pending
+            ? '<span class="px-1.5 py-0.5 rounded bg-amber-400/80 font-mono">未送信</span>'
+            : '';
 
           return `
             <div class="sketch-card group relative aspect-square bg-white rounded-xl overflow-hidden border border-black/5 shadow-sm hover:shadow-md transition-all cursor-pointer" data-index="${index}">
               <img src="${thumbUrl}" alt="Thumbnail" class="w-full h-full object-contain p-1 group-hover:scale-105 transition-transform duration-200" />
               <div class="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/60 to-transparent p-2 flex justify-between items-end text-[10px] text-white">
                 <span class="font-mono opacity-90">${timeStr}</span>
-                <span class="px-1.5 py-0.5 rounded bg-white/20 backdrop-blur-sm font-mono">${timerLabel}</span>
+                <span class="flex gap-1">${pendingBadge}<span class="px-1.5 py-0.5 rounded bg-white/20 backdrop-blur-sm font-mono">${timerLabel}</span></span>
               </div>
             </div>
           `;
@@ -75,6 +81,8 @@ export class GalleryModal {
             <div class="flex items-center gap-3">
               <h2 class="text-base font-semibold tracking-wide text-[#1a1a1a]">ギャラリー</h2>
               <span class="px-2 py-0.5 rounded-full bg-black/5 text-[11px] font-mono text-black/60">${totalCount} 枚</span>
+              ${pendingCount > 0 ? `<span class="px-2 py-0.5 rounded-full bg-amber-100 text-[11px] font-mono text-amber-800">未送信 ${pendingCount} 枚</span>` : ''}
+              ${!this.serverAvailable && totalCount > 0 ? `<span class="px-2 py-0.5 rounded-full bg-black/5 text-[11px] font-mono text-black/40">オフライン表示</span>` : ''}
             </div>
             <div class="flex items-center gap-2">
               <button id="gallery-close-btn" class="p-2 rounded-full hover:bg-black/5 active:scale-95 transition-all text-[#1a1a1a]" title="閉じる">
@@ -116,12 +124,10 @@ export class GalleryModal {
 
   private openViewer(index: number): void {
     new ViewerModal(this.viewerRoot, this.sketches, index, {
-      onDelete: async (id) => {
-        await SketchService.deleteSketch(id);
-        Toast.show('スケッチを削除しました');
-        this.sketches = this.sketches.filter((s) => s.id !== id);
-        this.render();
-        this.attachEvents();
+      onDelete: async (item) => {
+        const ok = await SyncService.deleteItem(item);
+        Toast.show(ok ? 'スケッチを削除しました' : '削除に失敗しました');
+        await this.loadAndRender();
       },
       onClose: () => {
         this.loadAndRender();

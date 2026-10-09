@@ -1,15 +1,15 @@
-import type { Sketch } from '../db/database';
+import type { GalleryItem } from '../services/SyncService';
 import { SketchService } from '../services/SketchService';
 import { Toast } from '../ui/Toast';
 
 export interface ViewerModalCallbacks {
-  onDelete: (id: number) => void;
+  onDelete: (item: GalleryItem) => void;
   onClose: () => void;
 }
 
 export class ViewerModal {
   private container: HTMLElement;
-  private sketches: Sketch[];
+  private sketches: GalleryItem[];
   private currentIndex: number;
   private callbacks: ViewerModalCallbacks;
   private touchStartX: number = 0;
@@ -17,7 +17,7 @@ export class ViewerModal {
 
   constructor(
     container: HTMLElement,
-    sketches: Sketch[],
+    sketches: GalleryItem[],
     initialIndex: number,
     callbacks: ViewerModalCallbacks
   ) {
@@ -34,7 +34,7 @@ export class ViewerModal {
     const sketch = this.sketches[this.currentIndex];
     if (!sketch) return;
 
-    const imgUrl = URL.createObjectURL(sketch.imageBlob);
+    const imgUrl = sketch.imageUrl;
     const dateStr = new Date(sketch.createdAt).toLocaleString('ja-JP', {
       month: 'short',
       day: 'numeric',
@@ -100,11 +100,8 @@ export class ViewerModal {
       </div>
     `;
 
-    // Revoke old URL on replacement
-    const imgEl = document.getElementById('viewer-img') as HTMLImageElement;
-    imgEl.onload = () => {
-      URL.revokeObjectURL(imgUrl);
-    };
+    // NOTE: image URLs are stable per gallery item (server URL or a single
+    // Blob URL for outbox rows), so they must NOT be revoked here.
   }
 
   private attachEvents(): void {
@@ -129,17 +126,27 @@ export class ViewerModal {
 
     shareBtn?.addEventListener('click', async () => {
       const sketch = this.sketches[this.currentIndex];
-      if (sketch) {
+      if (!sketch) return;
+      try {
         Toast.show('画像をエクスポート中...');
-        await SketchService.exportSketch(sketch);
+        const imageBlob =
+          sketch.imageBlob ?? (await (await fetch(sketch.imageUrl)).blob());
+        await SketchService.exportSketch({
+          createdAt: sketch.createdAt,
+          timerDurationSec: sketch.timerDurationSec,
+          imageBlob,
+          thumbnailBlob: imageBlob,
+        });
+      } catch {
+        Toast.show('エクスポートに失敗しました');
       }
     });
 
     deleteBtn?.addEventListener('click', () => {
       if (confirm('このスケッチを削除しますか？')) {
         const sketch = this.sketches[this.currentIndex];
-        if (sketch?.id !== undefined) {
-          this.callbacks.onDelete(sketch.id);
+        if (sketch) {
+          this.callbacks.onDelete(sketch);
           this.sketches.splice(this.currentIndex, 1);
           if (this.sketches.length === 0) {
             this.close();

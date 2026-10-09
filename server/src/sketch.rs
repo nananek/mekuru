@@ -84,6 +84,15 @@ pub async fn upload_sketch(
     let thumb = thumbnail_data.unwrap_or_else(|| image.clone()); // fallback
     let date_str = created_at.unwrap_or_else(chrono_now);
 
+    // Idempotent re-upload: the client retries until the server confirms,
+    // and confirmation may arrive after the row was already stored.
+    if let Ok(Some(existing_id)) = state.db.find_sketch_by_time(&user_id, &date_str) {
+        return Ok(Json(serde_json::json!({
+            "success": true,
+            "id": existing_id
+        })));
+    }
+
     let sketch_id = state
         .db
         .save_sketch(

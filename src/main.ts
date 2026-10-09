@@ -4,6 +4,7 @@ import { CroquisTimer } from './timer/CroquisTimer';
 import { CanvasHUD } from './ui/CanvasHUD';
 import { SketchService } from './services/SketchService';
 import { SyncService } from './services/SyncService';
+import { db } from './db/database';
 import { GalleryModal } from './gallery/GalleryModal';
 import { AuthModal } from './ui/AuthModal';
 import { Toast } from './ui/Toast';
@@ -22,8 +23,31 @@ document.addEventListener('DOMContentLoaded', () => {
   let hud: CanvasHUD;
   let timer: CroquisTimer;
 
-  // Initial Sync from server in background if available
-  SyncService.syncFromServer().catch(() => {});
+  // Outbox flush: upload pending sketches and delete locally confirmed
+  // ones. Runs at startup, every minute, and when the page becomes visible
+  // (back online / logged in later / other device drew meanwhile).
+  let syncRunning = false;
+  const runOutboxFlush = async (announce: boolean) => {
+    if (syncRunning) return;
+    syncRunning = true;
+    try {
+      const done = await SyncService.flushOutbox();
+      if (announce && done > 0) {
+        Toast.show(`サーバーに${done}件保存しました`);
+      }
+    } finally {
+      syncRunning = false;
+    }
+  };
+  runOutboxFlush(false).catch(() => {});
+  window.setInterval(() => {
+    runOutboxFlush(false).catch(() => {});
+  }, 60_000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      runOutboxFlush(true).catch(() => {});
+    }
+  });
 
   // Page Flip ("めくる") execution routine
   const executeMekuru = async () => {
@@ -46,10 +70,18 @@ document.addEventListener('DOMContentLoaded', () => {
       engine.clearCanvas();
       Toast.show('めくりました');
 
-      // 3. Save asynchronously to IndexedDB in background
-      SketchService.saveSketch(snapshot, duration).then((savedSketch) => {
-        if (savedSketch) {
-          SyncService.uploadSketch(savedSketch).catch(() => {});
+      // 3. Save to the outbox (IndexedDB) in background; the flusher
+      // uploads it and deletes the local copy on server confirmation.
+      SketchService.saveSketch(snapshot, duration).then(async (savedSketch) => {
+        if (savedSketch?.id !== undefined) {
+          try {
+            if (await SyncService.uploadSketch(savedSketch)) {
+              await db.sketches.delete(savedSketch.id);
+            }
+            // On failure the periodic flusher picks it up later.
+          } catch {
+            // ignore: periodic flusher picks it up later
+          }
         }
       });
     } else {

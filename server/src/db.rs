@@ -414,6 +414,19 @@ impl Db {
         Ok(deleted > 0)
     }
 
+    /// Existing sketch id for (user, created_at), for idempotent re-uploads.
+    pub fn find_sketch_by_time(&self, user_id: &str, created_at: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT id FROM sketches WHERE user_id = ?1 AND created_at = ?2 LIMIT 1")?;
+        let mut rows = stmt.query(params![user_id, created_at])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Owner of a sketch for authorization checks.
     /// `Ok(None)` = no such sketch; `Ok(Some(uid))` with `uid == None` =
     /// legacy anonymous row (created before login was required).

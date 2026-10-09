@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  mekuru:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mekuru-app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3000
+      - HOST=0.0.0.0
+      - DATABASE_URL=/app/data/mekuru.db
+      - STATIC_DIR=/app/dist
+      - RP_ID=${RP_ID:-localhost}
+      - RP_ORIGIN=${RP_ORIGIN:-http://localhost:3000}
+
+# =========================================================================
+# 【CLI操作マニュアル (パスキーリセット・ユーザー管理)】
+#
+# ■ パスキーのリセット (最悪CLIでリセット可能):
+#   docker compose exec mekuru mekuru reset-passkey <username>
+#
+# ■ 登録ユーザー & パスキー数一覧の確認:
+#   docker compose exec mekuru mekuru list-users
+#
+# ■ ユーザーの事前作成:
+#   docker compose exec mekuru mekuru create-user <username>
+# =========================================================================

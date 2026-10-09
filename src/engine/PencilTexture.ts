@@ -6,6 +6,11 @@
 export class PencilTexture {
   private static grainPattern: CanvasPattern | null = null;
 
+  // Reused stamps: same grain along a stroke (consistent pencil feel) and
+  // no per-segment getImageData cost. Keyed by quantized radius + shading.
+  private static stampCache = new Map<string, HTMLCanvasElement>();
+  private static readonly STAMP_CACHE_LIMIT = 32;
+
   /**
    * Initializes or gets the seamless paper noise pattern
    */
@@ -39,8 +44,28 @@ export class PencilTexture {
   /**
    * Creates an offscreen graphite particle stamp for stamping along the stroke path.
    * Modulates width, aspect ratio (for pen tilt / altitudeAngle), and grain density.
+   * Results are cached: a stroke reuses identical grain instead of re-rolling
+   * speckle per segment (which read as dirt).
    */
   public static createStamp(
+    radius: number,
+    altitudeAngle: number
+  ): HTMLCanvasElement {
+    const isShading = altitudeAngle < 0.65;
+    const key = `${Math.round(radius * 2) / 2}:${isShading ? 1 : 0}`;
+    const cached = this.stampCache.get(key);
+    if (cached) return cached;
+
+    const stamp = this.buildStamp(radius, altitudeAngle);
+    if (this.stampCache.size >= this.STAMP_CACHE_LIMIT) {
+      const oldest = this.stampCache.keys().next();
+      if (!oldest.done) this.stampCache.delete(oldest.value);
+    }
+    this.stampCache.set(key, stamp);
+    return stamp;
+  }
+
+  private static buildStamp(
     radius: number,
     altitudeAngle: number
   ): HTMLCanvasElement {
@@ -78,14 +103,14 @@ export class PencilTexture {
     sctx.fillStyle = grad;
     sctx.fill();
 
-    // Speckle graphite grain noise
+    // Speckle graphite grain noise. Kept subtle and biased to the stamp
+    // core so edges stay clean: alpha jitter scales with existing alpha.
     const imgData = sctx.getImageData(0, 0, width, height);
     const data = imgData.data;
     for (let i = 0; i < data.length; i += 4) {
       const alpha = data[i + 3];
       if (alpha > 0) {
-        // Random graphite speckling
-        const noise = (Math.random() - 0.5) * 80;
+        const noise = (Math.random() - 0.5) * 56 * (alpha / 255);
         data[i + 3] = Math.max(0, Math.min(255, alpha + noise));
       }
     }

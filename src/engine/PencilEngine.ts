@@ -187,6 +187,12 @@ export class PencilEngine {
 
     for (let i = 0; i < coalescedEvents.length; i++) {
       const subEvent = coalescedEvents[i];
+      // Apple Pencil hover reports pressure 0. Never draw from hover:
+      // with a missed pointerup this would streak from the stale lastPoint.
+      // (Contact moves always carry pressure > 0 on pen.)
+      if (subEvent.pointerType === 'pen' && subEvent.pressure === 0) {
+        continue;
+      }
       const pt = this.extractPoint(subEvent);
       if (this.lastPoint) {
         this.drawPencilSegment(this.lastPoint, pt);

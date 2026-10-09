@@ -106,15 +106,6 @@ export class PencilEngine {
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.fillStyle = '#fdfbf7';
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-
-    // Apply faint paper grain
-    const noise = PencilTexture.getPaperNoisePattern(this.ctx);
-    if (noise) {
-      this.ctx.globalAlpha = 0.035;
-      this.ctx.fillStyle = noise;
-      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    }
-
     this.ctx.restore();
   }
 

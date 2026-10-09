@@ -77,8 +77,16 @@ pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+/// Session user for endpoints that need authorization.
+/// Returns `None` when the request carries no (or an expired) session.
+pub(crate) fn session_user(headers: &HeaderMap, db: &Db) -> Option<User> {
+    let token = extract_session_token(headers)?;
+    db.get_session_user(&token).unwrap_or(None)
+}
+
 pub async fn register_start(
     State(state): State<AuthState>,
+    headers: HeaderMap,
     Json(payload): Json<RegisterStartRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let username = payload.username.trim();
@@ -89,12 +97,23 @@ pub async fn register_start(
         ));
     }
 
-    let user = state.db.get_or_create_user(username).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("DB error: {}", e),
-        )
-    })?;
+    // Accounts are provisioned via CLI (`create-user`). Never create them
+    // from the network: otherwise anyone could squat usernames.
+    let user = state
+        .db
+        .get_user_by_username(username)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "ユーザーが存在しません。管理者に作成を依頼してください".to_string(),
+            )
+        })?;
 
     let user_id = uuid::Uuid::parse_str(&user.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
 
@@ -104,7 +123,23 @@ pub async fn register_start(
         .into_iter()
         .filter_map(|json| serde_json::from_str::<Passkey>(&json).ok())
         .map(|pk| pk.cred_id().clone())
-        .collect();
+        .collect::<Vec<_>>();
+
+    // Adding a key to an account that already has keys requires a live
+    // session for that same account. A keyless account (fresh CLI user or
+    // right after `reset-passkey`) is open for first enrollment; losing all
+    // keys is recovered the same way (CLI reset, then enroll again).
+    if !exclude_credentials.is_empty() {
+        match session_user(&headers, &state.db) {
+            Some(u) if u.id == user.id => {}
+            _ => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "追加登録にはログインが必要です。先にパスキーでログインしてください".into(),
+                ))
+            }
+        }
+    }
 
     let (creation_challenge, reg_state) = state
         .webauthn
@@ -152,6 +187,7 @@ pub async fn register_start(
 
 pub async fn register_finish(
     State(state): State<AuthState>,
+    headers: HeaderMap,
     Json(payload): Json<RegisterFinishRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let (reg_json, user_id) = state
@@ -172,6 +208,27 @@ pub async fn register_finish(
 
     let user_id =
         user_id.ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing user_id".to_string()))?;
+
+    // Re-check the enrollment gate here: whoever finishes second (a race
+    // against a concurrent enrollment, or a forged finish call) must hold
+    // a session once the account already has keys.
+    let existing = state.db.get_passkeys_for_user(&user_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB error: {}", e),
+        )
+    })?;
+    if !existing.is_empty() {
+        match session_user(&headers, &state.db) {
+            Some(u) if u.id == user_id => {}
+            _ => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "追加登録にはログインが必要です。先にパスキーでログインしてください".into(),
+                ))
+            }
+        }
+    }
 
     let reg_state: PasskeyRegistration = serde_json::from_str(&reg_json).map_err(|e| {
         (
@@ -252,9 +309,24 @@ pub async fn login_start(
 
     if let Some(username) = payload.username {
         let username = username.trim();
-        if !username.is_empty()
-            && let Ok(user) = state.db.get_or_create_user(username)
-        {
+        if !username.is_empty() {
+            // Read-only: login must never create users (that would let
+            // anyone mint accounts by attempting a login).
+            let user = state
+                .db
+                .get_user_by_username(username)
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("DB error: {}", e),
+                    )
+                })?
+                .ok_or_else(|| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "ユーザーが存在しません".to_string(),
+                    )
+                })?;
             target_user_id = Some(user.id.clone());
             let list = state.db.get_passkeys_for_user(&user.id).unwrap_or_default();
             for json in list {

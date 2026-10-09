@@ -42,7 +42,7 @@ export class AuthModal {
           </p>
 
           <div class="space-y-2">
-            <label class="block text-xs font-medium text-black/70">ユーザー名</label>
+            <label class="block text-xs font-medium text-black/70">ユーザー名（新規登録時のみ必要）</label>
             <input id="auth-username-input" type="text" placeholder="例: croquis_artist" class="w-full px-3 py-2 text-sm rounded-lg border border-black/15 bg-white focus:outline-none focus:border-black font-mono" />
           </div>
 
@@ -62,7 +62,7 @@ export class AuthModal {
                 <polyline points="10 17 15 12 10 7"/>
                 <line x1="15" x2="15" y1="12" y2="3"/>
               </svg>
-              <span>パスキーでログイン</span>
+              <span>パスキーでログイン（入力不要）</span>
             </button>
           </div>
 
@@ -130,10 +130,11 @@ export class AuthModal {
     });
 
     loginBtn?.addEventListener('click', async () => {
-      const username = usernameInput?.value.trim() || undefined;
+      // Usernameless (discoverable) login: the passkey itself identifies
+      // the account, so no username input is needed.
       try {
         Toast.show('生体認証で認証中...');
-        await AuthService.loginPasskey(username);
+        await AuthService.loginPasskey();
         Toast.show('ログインに成功しました');
         this.render();
       } catch (err) {

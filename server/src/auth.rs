@@ -136,7 +136,7 @@ pub async fn register_start(
                 return Err((
                     StatusCode::UNAUTHORIZED,
                     "追加登録にはログインが必要です。先にパスキーでログインしてください".into(),
-                ))
+                ));
             }
         }
     }
@@ -225,7 +225,7 @@ pub async fn register_finish(
                 return Err((
                     StatusCode::UNAUTHORIZED,
                     "追加登録にはログインが必要です。先にパスキーでログインしてください".into(),
-                ))
+                ));
             }
         }
     }

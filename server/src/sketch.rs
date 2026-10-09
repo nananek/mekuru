@@ -23,11 +23,7 @@ fn require_login(headers: &HeaderMap, db: &Db) -> Result<User, (StatusCode, Stri
 /// - row owned by the caller -> allowed
 /// - legacy anonymous row (`user_id IS NULL`, created before login was
 ///   required) -> allowed for any logged-in user (back-compat)
-fn owner_gate(
-    db: &Db,
-    id: i64,
-    caller: &User,
-) -> Result<(), (StatusCode, String)> {
+fn owner_gate(db: &Db, id: i64, caller: &User) -> Result<(), (StatusCode, String)> {
     let not_found = (StatusCode::NOT_FOUND, "Sketch not found".to_string());
     match db.get_sketch_owner(id) {
         Ok(Some(Some(owner))) if owner == caller.id => Ok(()),
@@ -116,12 +112,15 @@ pub async fn list_sketches(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let current_user = require_login(&headers, &state.db)?;
 
-    let list = state.db.list_sketches(Some(&current_user.id)).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("DB error: {}", e),
-        )
-    })?;
+    let list = state
+        .db
+        .list_sketches(Some(&current_user.id))
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?;
 
     Ok(Json(list))
 }

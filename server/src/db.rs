@@ -474,6 +474,7 @@ impl Db {
     }
 
     // --- Debug Strokes ---
+    #[allow(clippy::too_many_arguments)]
     pub fn save_debug_stroke(
         &self,
         id: &str,

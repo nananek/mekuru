@@ -20,6 +20,7 @@ pub struct RenderJob {
     pub dpr: f64,
 }
 
+#[derive(Default)]
 pub struct BridgeState {
     pub render_queue: VecDeque<RenderJob>,
     pub pending_renders: HashMap<String, oneshot::Sender<Vec<u8>>>,
@@ -28,17 +29,7 @@ pub struct BridgeState {
 
 impl BridgeState {
     pub fn new() -> Self {
-        Self {
-            render_queue: VecDeque::new(),
-            pending_renders: HashMap::new(),
-            last_poll: None,
-        }
-    }
-}
-
-impl Default for BridgeState {
-    fn default() -> Self {
-        Self::new()
+        Self::default()
     }
 }
 

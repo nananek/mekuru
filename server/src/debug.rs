@@ -392,7 +392,9 @@ pub async fn render_stroke(
         let mut bridge = state.bridge.lock().await;
 
         // Check if a browser has polled recently (within last 8 seconds)
-        let is_bridge_active = bridge.last_poll.is_some_and(|t| t.elapsed() < Duration::from_secs(8));
+        let is_bridge_active = bridge
+            .last_poll
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(8));
 
         if !is_bridge_active {
             return Err((

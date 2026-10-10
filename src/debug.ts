@@ -83,7 +83,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             'flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/20 text-red-300 font-mono border border-red-500/30';
           bridgeStatusText.textContent = `Bridge: HTTP ${res.status}`;
         }
-      } catch (err) {
+      } catch {
         bridgeStatusIndicator.className =
           'flex items-center gap-2 px-3 py-1 rounded-full bg-yellow-500/20 text-yellow-300 font-mono border border-yellow-500/30';
         bridgeStatusText.textContent = 'Bridge: Disconnected (Retrying)';

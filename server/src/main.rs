@@ -182,14 +182,26 @@ async fn run_server(
                 .post(debug::save_debug_stroke_json)
                 .delete(debug::clear_debug_strokes),
         )
-        .route("/strokes/upload", axum::routing::post(debug::save_debug_stroke_multipart))
-        .route("/strokes/latest", axum::routing::get(debug::get_latest_debug_stroke))
+        .route(
+            "/strokes/upload",
+            axum::routing::post(debug::save_debug_stroke_multipart),
+        )
+        .route(
+            "/strokes/latest",
+            axum::routing::get(debug::get_latest_debug_stroke),
+        )
         .route("/strokes/{id}", axum::routing::get(debug::get_debug_stroke))
-        .route("/strokes/{id}/image", axum::routing::get(debug::get_debug_stroke_image))
+        .route(
+            "/strokes/{id}/image",
+            axum::routing::get(debug::get_debug_stroke_image),
+        )
         .route("/presets", axum::routing::get(debug::get_debug_presets))
         .route("/render", axum::routing::post(debug::render_stroke))
         .route("/bridge/poll", axum::routing::get(debug::bridge_poll))
-        .route("/bridge/response", axum::routing::post(debug::bridge_response))
+        .route(
+            "/bridge/response",
+            axum::routing::post(debug::bridge_response),
+        )
         .route("/status", axum::routing::get(debug::debug_status))
         .with_state(debug_state);
 

@@ -1,15 +1,15 @@
-use crate::db::Db;
+use crate::db::{chrono_now, Db};
 use axum::{
-    Json,
     extract::{Multipart, Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
+    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct RenderJob {
@@ -111,10 +111,10 @@ pub async fn save_debug_stroke_json(
         _ => 0,
     };
     let points_str = payload.points.to_string();
-    let meta_str = payload
-        .metadata
-        .map(|m| m.to_string())
-        .unwrap_or_else(|| "{}".to_string());
+    let meta_str = match &payload.metadata {
+        Some(m) => m.to_string(),
+        None => "{}".to_string(),
+    };
 
     let image_bytes = payload
         .image_base64
@@ -396,8 +396,7 @@ pub async fn render_stroke(
         // Check if a browser has polled recently (within last 8 seconds)
         let is_bridge_active = bridge
             .last_poll
-            .map(|t| t.elapsed() < Duration::from_secs(8))
-            .unwrap_or(false);
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(8));
 
         if !is_bridge_active {
             return Err((
@@ -416,7 +415,10 @@ pub async fn render_stroke(
     match render_result {
         Ok(Ok(image_bytes)) => {
             let now = chrono_now();
-            let point_count = payload.points.as_array().map(|a| a.len() as i64).unwrap_or(0);
+            let point_count = payload
+                .points
+                .as_array()
+                .map_or(0, |a| a.len() as i64);
             let label = payload.label.as_deref().unwrap_or("live_render");
 
             let _ = state.db.save_debug_stroke(
@@ -453,12 +455,10 @@ pub async fn render_stroke(
             }))
             .into_response())
         }
-        Ok(Err(_)) => {
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Rendering cancelled or bridge disconnected.".to_string(),
-            ))
-        }
+        Ok(Err(_)) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Rendering cancelled or bridge disconnected.".to_string(),
+        )),
         Err(_) => {
             // Clean up timed out pending channel
             let mut bridge = state.bridge.lock().await;
@@ -495,11 +495,17 @@ pub async fn bridge_response(
             let _ = tx.send(bytes);
             return Ok(Json(serde_json::json!({ "success": true })));
         } else {
-            return Err((StatusCode::BAD_REQUEST, "Invalid image base64 format".to_string()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Invalid image base64 format".to_string(),
+            ));
         }
     }
 
-    Ok(Json(serde_json::json!({ "success": false, "reason": "No pending request with this ID" })))
+    Ok(Json(serde_json::json!({
+        "success": false,
+        "reason": "No pending request with this ID"
+    })))
 }
 
 /// Get debug server status and bridge state
@@ -507,17 +513,12 @@ pub async fn debug_status(State(state): State<DebugState>) -> impl IntoResponse 
     let bridge = state.bridge.lock().await;
     let is_connected = bridge
         .last_poll
-        .map(|t| t.elapsed() < Duration::from_secs(8))
-        .unwrap_or(false);
+        .is_some_and(|t| t.elapsed() < Duration::from_secs(8));
 
     let queue_len = bridge.render_queue.len();
     let pending_len = bridge.pending_renders.len();
 
-    let stroke_count = state
-        .db
-        .list_debug_strokes(1)
-        .map(|s| s.len())
-        .unwrap_or(0);
+    let stroke_count = state.db.list_debug_strokes(1).map_or(0, |s| s.len());
 
     Json(serde_json::json!({
         "status": "ready",
@@ -531,45 +532,6 @@ pub async fn debug_status(State(state): State<DebugState>) -> impl IntoResponse 
 // ---------------------------------------------------------------------------
 // Helpers & Preset Generators
 // ---------------------------------------------------------------------------
-
-fn chrono_now() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let days = now / 86400;
-    let rem_secs = now % 86400;
-    let hours = rem_secs / 3600;
-    let mins = (rem_secs % 3600) / 60;
-    let s = rem_secs % 60;
-    let mut year = 1970;
-    let mut d = days;
-    loop {
-        let leap = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 1 } else { 0 };
-        let days_in_year = 365 + leap;
-        if d >= days_in_year {
-            d -= days_in_year;
-            year += 1;
-        } else {
-            break;
-        }
-    }
-    let leap = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 1 } else { 0 };
-    let month_days = [31, 28 + leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut month = 1;
-    for &md in &month_days {
-        if d >= md {
-            d -= md;
-            month += 1;
-        } else {
-            break;
-        }
-    }
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month, d + 1, hours, mins, s
-    )
-}
 
 fn decode_base64_data_url(data: &str) -> Option<Vec<u8>> {
     let b64_str = if let Some(idx) = data.find(',') {

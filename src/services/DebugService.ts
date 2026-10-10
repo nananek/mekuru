@@ -143,7 +143,7 @@ export class DebugService {
       } else {
         this.notifyStatus(`[DEBUG] 送信エラー: HTTP ${res.status}`);
       }
-    } catch (err) {
+    } catch {
       this.notifyStatus(`[DEBUG] 送信失敗 (オフライン)`);
     }
   }

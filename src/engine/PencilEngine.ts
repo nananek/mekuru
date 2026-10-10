@@ -559,27 +559,31 @@ export class PencilEngine {
     this.options.onUndoChange?.(this.undoManager.canUndo());
     this.options.onStrokeStart?.();
 
-    const firstPt = points[0];
+    const firstPt: Point = points[0];
+    let curX: number = firstPt.x;
+    let curY: number = firstPt.y;
     this.smoothedPressure = firstPt.pressure;
-    this.smoothedPoint = { x: firstPt.x, y: firstPt.y };
+    this.smoothedPoint = { x: curX, y: curY };
     this.drawPencilDot(firstPt);
-    let lastPt = firstPt;
-    this.currentDrawPoint = { x: firstPt.x, y: firstPt.y };
+    let lastPt: Point = firstPt;
+    this.currentDrawPoint = { x: curX, y: curY };
 
     for (let i = 1; i < points.length; i++) {
-      const rawPt = points[i];
-      const dx = rawPt.x - this.smoothedPoint.x;
-      const dy = rawPt.y - this.smoothedPoint.y;
-      const dist = Math.hypot(dx, dy);
+      const rawPt: Point = points[i];
+      const dx: number = rawPt.x - curX;
+      const dy: number = rawPt.y - curY;
+      const dist: number = Math.hypot(dx, dy);
 
       // Streamline jitter reduction filter (skip tiny noise unless end of stroke)
       if (dist < 0.35 && i < points.length - 1) {
         continue;
       }
 
-      const factor = 0.75;
-      const smoothX = this.smoothedPoint.x + dx * factor;
-      const smoothY = this.smoothedPoint.y + dy * factor;
+      const factor: number = 0.75;
+      const smoothX: number = curX + dx * factor;
+      const smoothY: number = curY + dy * factor;
+      curX = smoothX;
+      curY = smoothY;
       this.smoothedPoint = { x: smoothX, y: smoothY };
 
       const pt: Point = {

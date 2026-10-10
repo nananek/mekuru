@@ -512,20 +512,17 @@ impl Db {
              ORDER BY created_at DESC
              LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            Ok(DebugStrokeMeta {
+        let mut rows = stmt.query(params![limit as i64])?;
+        let mut res = Vec::new();
+        while let Some(row) = rows.next()? {
+            res.push(DebugStrokeMeta {
                 id: row.get(0)?,
                 label: row.get(1)?,
                 created_at: row.get(2)?,
                 point_count: row.get(3)?,
                 metadata_json: row.get(4)?,
                 has_image: row.get::<_, i64>(5)? != 0,
-            })
-        })?;
-
-        let mut res = Vec::new();
-        for r in rows {
-            res.push(r?);
+            });
         }
         Ok(res)
     }
@@ -595,7 +592,7 @@ impl Db {
     }
 }
 
-fn chrono_now() -> String {
+pub fn chrono_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

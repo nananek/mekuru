@@ -14,7 +14,7 @@ ENV VITE_APP_SHA=${GIT_SHA}
 COPY package*.json ./
 RUN npm ci || npm install
 
-COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.js index.html ./
+COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.js index.html debug.html ./
 COPY public/ ./public/
 COPY src/ ./src/
 RUN npm run build

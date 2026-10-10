@@ -22,6 +22,27 @@ pub struct SketchMeta {
     pub created_at: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct DebugStrokeMeta {
+    pub id: String,
+    pub label: Option<String>,
+    pub created_at: String,
+    pub point_count: i64,
+    pub metadata_json: String,
+    pub has_image: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct DebugStrokeDetail {
+    pub id: String,
+    pub label: Option<String>,
+    pub created_at: String,
+    pub point_count: i64,
+    pub points_json: String,
+    pub metadata_json: String,
+    pub has_image: bool,
+}
+
 impl Db {
     pub fn init<P: AsRef<Path>>(path: P) -> Result<Self> {
         let parent = path.as_ref().parent();
@@ -79,6 +100,17 @@ impl Db {
                 image_data BLOB NOT NULL,
                 thumbnail_data BLOB NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS debug_strokes (
+                id TEXT PRIMARY KEY,
+                label TEXT,
+                created_at TEXT NOT NULL,
+                point_count INTEGER NOT NULL,
+                points_json TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                image_data BLOB,
+                thumbnail_data BLOB
             );",
         )?;
 
@@ -440,9 +472,128 @@ impl Db {
             Ok(None)
         }
     }
+
+    // --- Debug Strokes ---
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_debug_stroke(
+        &self,
+        id: &str,
+        label: Option<&str>,
+        created_at: &str,
+        point_count: i64,
+        points_json: &str,
+        metadata_json: &str,
+        image_data: Option<&[u8]>,
+        thumbnail_data: Option<&[u8]>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO debug_strokes (
+                id, label, created_at, point_count, points_json, metadata_json, image_data, thumbnail_data
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                label,
+                created_at,
+                point_count,
+                points_json,
+                metadata_json,
+                image_data,
+                thumbnail_data,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_debug_strokes(&self, limit: usize) -> Result<Vec<DebugStrokeMeta>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, label, created_at, point_count, metadata_json, (image_data IS NOT NULL) AS has_image
+             FROM debug_strokes
+             ORDER BY created_at DESC
+             LIMIT ?1",
+        )?;
+        let mut rows = stmt.query(params![limit as i64])?;
+        let mut res = Vec::new();
+        while let Some(row) = rows.next()? {
+            res.push(DebugStrokeMeta {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                created_at: row.get(2)?,
+                point_count: row.get(3)?,
+                metadata_json: row.get(4)?,
+                has_image: row.get::<_, i64>(5)? != 0,
+            });
+        }
+        Ok(res)
+    }
+
+    pub fn get_debug_stroke(&self, id: &str) -> Result<Option<DebugStrokeDetail>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, label, created_at, point_count, points_json, metadata_json, (image_data IS NOT NULL) AS has_image
+             FROM debug_strokes
+             WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(DebugStrokeDetail {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                created_at: row.get(2)?,
+                point_count: row.get(3)?,
+                points_json: row.get(4)?,
+                metadata_json: row.get(5)?,
+                has_image: row.get::<_, i64>(6)? != 0,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_latest_debug_stroke(&self) -> Result<Option<DebugStrokeDetail>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, label, created_at, point_count, points_json, metadata_json, (image_data IS NOT NULL) AS has_image
+             FROM debug_strokes
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query([])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(DebugStrokeDetail {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                created_at: row.get(2)?,
+                point_count: row.get(3)?,
+                points_json: row.get(4)?,
+                metadata_json: row.get(5)?,
+                has_image: row.get::<_, i64>(6)? != 0,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_debug_stroke_image(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT image_data FROM debug_strokes WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get(0)?)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn clear_debug_strokes(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn.execute("DELETE FROM debug_strokes", [])?;
+        Ok(count)
+    }
 }
 
-fn chrono_now() -> String {
+pub fn chrono_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

@@ -123,3 +123,67 @@ npm run dev
 cd server
 cargo run -- serve --port 3000
 ```
+
+---
+
+## 6. LLM ライブデバッグAPI & ワークベンチ
+
+「人間が描く → 不満を伝える → LLMがPRを出す → デプロイして確認」という不毛な伝言ゲームループを解消するため、**LLM自身が入力ストロークを与え、ブラウザのCanvas描画結果（PNG画像）を直接視覚的に確認・検証できるデバッグ機構** を備えています。
+
+```mermaid
+flowchart LR
+    iPad["iPad / Apple Pencil<br/>(?debug=1)"] -->|"生のPointerEvent & 画像"| API["/api/debug/strokes"]
+    LLM["LLM (AI Agent)<br/>CLI / Python"] <-->|"ストローク送信 & 画像取得"| API
+    Workbench["Web ワークベンチ<br/>(/debug.html)"] <-->|"Live Bridge (Canvas2D)"| API
+```
+
+### 1. iPad実機からのストローク自動収集
+- URLに `?debug=1` を付与して開くか、設定モーダルの「ライブデバッグ記録」をONにします。
+- Apple Pencilで描くたびに、生のポインタイベント列（座標、筆圧、傾き角度、方位角）と描画結果PNGが自動的にデバッグAPIへ送信・保存されます。
+
+### 2. LLM向け CLI ツール (`scripts/debug_api.py`)
+
+LLMや開発者はターミナルから1コマンドで入力と描画結果を確認できます。
+
+```bash
+# サーバーおよび Live Bridge の接続ステータス確認
+python3 scripts/debug_api.py status
+
+# iPadで直近描かれた最新ストロークの入力JSONと描画結果PNGを取得
+python3 scripts/debug_api.py latest
+
+# 標準テストプリセット（傾きシェーディング、筆圧ランプ等）を描画して画像生成
+python3 scripts/debug_api.py preset tilt_flat_shading
+python3 scripts/debug_api.py preset pressure_ramp_line
+python3 scripts/debug_api.py preset smooth_s_curve
+
+# 任意のストロークJSONファイルを投げてCanvas描画結果PNGを生成
+python3 scripts/debug_api.py render path/to/points.json
+
+# 記録されたストローク一覧
+python3 scripts/debug_api.py list
+```
+
+出力されたPNG画像はエージェントのマルチモーダル画像閲覧ツールで直接視覚的に確認でき、コード修正の前後で線の連続性・アンチエイリアス・グラデーション・濃淡を即座に自律評価できます。
+
+### 3. デバッグ・ワークベンチ画面 (`/debug.html`)
+ブラウザで `http://localhost:3000/debug.html` を開きます。
+- **Live Bridge**: 開いておくだけで、LLMからのレンダリング要求を受信して実際の `PencilEngine` でCanvas描画し、生成画像をサーバー経由で即座に返信します。
+- **ストローク・インスペクター**: 過去に記録されたストロークの点数・筆圧・傾き角度の推移を詳細分析。
+- **再描画比較 (Replay)**: 過去のストロークを最新のエンジンコードで即座に再描画してビフォーアフターを比較可能。
+- **プリセット実行**: ワンクリックで各テストパターンを描画・検証。
+
+### 4. 主なAPIエンドポイント
+
+| メソッド | パス | 説明 |
+|---|---|---|
+| `GET` | `/api/debug/status` | デバッグAPIとLive Bridgeの接続状況 |
+| `POST` | `/api/debug/render` | 入力ポイント列を送信し、Canvas描画画像（PNG）を取得 |
+| `GET` | `/api/debug/strokes/latest` | 直近描画されたストローク情報（JSON）を取得 |
+| `GET` | `/api/debug/strokes/{id}/image` | 指定ストロークの描画結果PNG画像を取得 |
+| `GET` | `/api/debug/strokes` | 記録されたストローク一覧を取得 |
+| `POST` | `/api/debug/strokes` | ストロークデータと画像を保存 |
+| `DELETE` | `/api/debug/strokes` | 記録ストローク全削除 |
+| `GET` | `/api/debug/presets` | テスト用標準プリセット一覧の取得 |
+| `GET` | `/api/debug/bridge/poll` | ブラウザ側Live Bridgeポーリング |
+| `POST` | `/api/debug/bridge/response` | ブラウザ側Live Bridge描画結果返信 |

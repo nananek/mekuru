@@ -1,5 +1,6 @@
 import { AuthService } from '../services/AuthService';
 import { UpdateService } from '../services/UpdateService';
+import { DebugService } from '../services/DebugService';
 import { Toast } from './Toast';
 
 export class AuthModal {
@@ -96,6 +97,28 @@ export class AuthModal {
           ${accountHtml}
 
           <div class="pt-4 mt-4 border-t border-black/5">
+            <h3 class="text-xs font-semibold tracking-wide text-black/70 mb-2">開発・LLMデバッグ連携</h3>
+            <div class="flex items-center justify-between gap-2 p-3 rounded-xl bg-black/[0.03] border border-black/5">
+              <div>
+                <div class="text-xs font-medium text-black/80">ライブデバッグ記録</div>
+                <div class="text-[11px] text-black/40">Apple Pencilの生ストロークと描画画像をAPIに自動中継</div>
+              </div>
+              <input id="settings-debug-toggle" type="checkbox" class="w-4 h-4 rounded text-black accent-[#1a1a1a]" ${DebugService.isDebugEnabled() ? 'checked' : ''} />
+            </div>
+            <div class="mt-2 flex justify-between items-center text-[11px]">
+              <a href="/debug.html" target="_blank" class="text-blue-600 hover:underline flex items-center gap-1 font-medium">
+                <span>デバッグワークベンチを開く</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                  <polyline points="15 3 21 3 21 9"></polyline>
+                  <line x1="10" y1="14" x2="21" y2="3"></line>
+                </svg>
+              </a>
+              <span class="text-black/40">URLに <code>?debug=1</code> でも有効化可能</span>
+            </div>
+          </div>
+
+          <div class="pt-4 mt-4 border-t border-black/5">
             <h3 class="text-xs font-semibold tracking-wide text-black/70 mb-2">アプリの更新</h3>
             <div class="flex items-center justify-between gap-2">
               <span class="text-[11px] font-mono text-black/50">ビルド: ${version}</span>
@@ -168,6 +191,15 @@ export class AuthModal {
         Toast.show('更新しています...');
         await UpdateService.forceUpdate();
       }
+    });
+
+    const debugToggle = document.getElementById('settings-debug-toggle') as HTMLInputElement | null;
+    debugToggle?.addEventListener('change', () => {
+      DebugService.setDebugEnabled(debugToggle.checked);
+      Toast.show(debugToggle.checked ? 'ライブデバッグ記録を有効化しました' : 'ライブデバッグ記録を無効化しました');
+      setTimeout(() => {
+        window.location.reload();
+      }, 500);
     });
   }
 

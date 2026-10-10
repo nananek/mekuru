@@ -153,26 +153,29 @@ pub async fn save_debug_stroke_multipart(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     {
-        let name = field.name().unwrap_or("").to_string();
-        if name == "label" {
-            label = field.text().await.ok();
-        } else if name == "points" {
-            if let Ok(text) = field.text().await {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if let Some(arr) = val.as_array() {
+        match field.name() {
+            Some("label") => {
+                label = field.text().await.ok();
+            }
+            Some("points") => {
+                if let Ok(text) = field.text().await {
+                    if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(&text) {
                         point_count = arr.len() as i64;
                     }
+                    points_str = text;
                 }
-                points_str = text;
             }
-        } else if name == "metadata" {
-            if let Ok(text) = field.text().await {
-                meta_str = text;
+            Some("metadata") => {
+                if let Ok(text) = field.text().await {
+                    meta_str = text;
+                }
             }
-        } else if name == "image" {
-            if let Ok(bytes) = field.bytes().await {
-                image_bytes = Some(bytes.to_vec());
+            Some("image") => {
+                if let Ok(bytes) = field.bytes().await {
+                    image_bytes = Some(bytes.to_vec());
+                }
             }
+            _ => {}
         }
     }
 

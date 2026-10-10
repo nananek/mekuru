@@ -1,5 +1,6 @@
 import { GestureRecognizer } from './GestureRecognizer';
 import { PencilTexture } from './PencilTexture';
+import { SplineStroke, StrokePoint } from './SplineStroke';
 import { UndoManager } from './UndoManager';
 
 export interface PencilEngineOptions {
@@ -10,24 +11,16 @@ export interface PencilEngineOptions {
   onTwoFingerSwipe?: (direction: 'left' | 'right') => void;
 }
 
-interface Point {
-  x: number;
-  y: number;
-  pressure: number;
-  altitudeAngle: number;
-  azimuthAngle: number;
-}
-
 export class PencilEngine {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
+  private activeCanvas: HTMLCanvasElement;
+  private activeCtx: CanvasRenderingContext2D;
   private dpr: number = 1;
 
   private isDrawing: boolean = false;
   private activePointerId: number | null = null;
-  private lastPoint: Point | null = null;
-  private currentDrawPoint: { x: number; y: number } | null = null;
-  private smoothedPressure: number = 0.5;
+  private splineStroke: SplineStroke;
   private strokeCount: number = 0;
 
   private undoManager: UndoManager;
@@ -53,6 +46,30 @@ export class PencilEngine {
     context.imageSmoothingQuality = 'high';
     this.ctx = context;
 
+    // Overlay active canvas for zero-artifact, banding-free real-time stroke rendering
+    this.activeCanvas = document.createElement('canvas');
+    this.activeCanvas.id = 'active-stroke-canvas';
+    this.activeCanvas.className =
+      'absolute inset-0 w-full h-full block pointer-events-none touch-none';
+    this.activeCanvas.style.zIndex = '10';
+    this.activeCanvas.style.mixBlendMode = 'multiply';
+    if (this.canvas.parentElement) {
+      this.canvas.parentElement.insertBefore(this.activeCanvas, this.canvas.nextSibling);
+    } else {
+      document.body.appendChild(this.activeCanvas);
+    }
+
+    const actx = this.activeCanvas.getContext('2d', {
+      desynchronized: true,
+    });
+    if (!actx) {
+      throw new Error('Could not get 2d context for active canvas');
+    }
+    actx.imageSmoothingEnabled = true;
+    actx.imageSmoothingQuality = 'high';
+    this.activeCtx = actx;
+
+    this.splineStroke = new SplineStroke(0.35);
     this.undoManager = new UndoManager(25);
     this.gestureRecognizer = new GestureRecognizer({
       onTwoFingerTap: () => {
@@ -70,7 +87,7 @@ export class PencilEngine {
   }
 
   /**
-   * Configures canvas dimensions with Retina scaling
+   * Configures canvas dimensions with Retina scaling for both main and active layers
    */
   public setupCanvasSize(): void {
     this.dpr = window.devicePixelRatio || 1;
@@ -89,10 +106,23 @@ export class PencilEngine {
       }
     }
 
-    this.canvas.width = Math.round(width * this.dpr);
-    this.canvas.height = Math.round(height * this.dpr);
+    const pixelWidth = Math.round(width * this.dpr);
+    const pixelHeight = Math.round(height * this.dpr);
+
+    this.canvas.width = pixelWidth;
+    this.canvas.height = pixelHeight;
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
+
+    this.activeCanvas.width = pixelWidth;
+    this.activeCanvas.height = pixelHeight;
+    this.activeCanvas.style.width = `${width}px`;
+    this.activeCanvas.style.height = `${height}px`;
+
+    this.ctx.imageSmoothingEnabled = true;
+    this.ctx.imageSmoothingQuality = 'high';
+    this.activeCtx.imageSmoothingEnabled = true;
+    this.activeCtx.imageSmoothingQuality = 'high';
 
     this.fillPaperBackground();
 
@@ -159,12 +189,9 @@ export class PencilEngine {
     this.options.onStrokeStart?.();
 
     const pt = this.extractPoint(e);
-    this.lastPoint = pt;
-    this.currentDrawPoint = { x: pt.x, y: pt.y };
-    this.smoothedPressure = pt.pressure;
-
-    // Stamp initial contact dot
-    this.drawPencilDot(pt);
+    this.splineStroke.clear();
+    this.splineStroke.addPoint(pt);
+    this.renderActiveStroke();
   }
 
   private onPointerMove(e: PointerEvent): void {
@@ -178,23 +205,44 @@ export class PencilEngine {
     e.preventDefault();
 
     // 120Hz Coalesced Events recovery for iPad Pro / Apple Pencil
-    const coalescedEvents = (typeof e.getCoalescedEvents === 'function')
-      ? e.getCoalescedEvents()
-      : [e];
+    const coalescedEvents =
+      typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e];
 
     for (let i = 0; i < coalescedEvents.length; i++) {
       const subEvent = coalescedEvents[i];
-      // Apple Pencil hover reports pressure 0. Never draw from hover:
-      // with a missed pointerup this would streak from the stale lastPoint.
-      // (Contact moves always carry pressure > 0 on pen.)
+      // Apple Pencil hover reports pressure 0. Never draw from hover
       if (subEvent.pointerType === 'pen' && subEvent.pressure === 0) {
         continue;
       }
       const pt = this.extractPoint(subEvent);
-      if (this.lastPoint && this.currentDrawPoint) {
-        this.drawPencilCurveSegment(this.lastPoint, pt);
-      }
-      this.lastPoint = pt;
+      this.splineStroke.addPoint(pt);
+    }
+
+    // Safety rolling flush if single continuous gesture is extraordinarily long (> 250 points)
+    if (this.splineStroke.getPointCount() > 250) {
+      this.flushLongStrokeChunk();
+    }
+
+    this.renderActiveStroke();
+  }
+
+  /**
+   * Flushes early segment of an extraordinarily long stroke to main canvas
+   * while preserving the last 4 points for seamless spline tangent continuation.
+   */
+  private flushLongStrokeChunk(): void {
+    this.ctx.save();
+    this.ctx.globalCompositeOperation = 'multiply';
+    this.ctx.drawImage(this.activeCanvas, 0, 0);
+    this.ctx.restore();
+
+    this.activeCtx.clearRect(0, 0, this.activeCanvas.width, this.activeCanvas.height);
+
+    const pts = this.splineStroke.getPoints();
+    const keep = pts.slice(-4);
+    this.splineStroke.clear();
+    for (const p of keep) {
+      this.splineStroke.addPoint(p);
     }
   }
 
@@ -209,15 +257,22 @@ export class PencilEngine {
         this.canvas.releasePointerCapture(e.pointerId);
       }
 
-      // Finalize the last remaining line segment to the release point
-      if (this.lastPoint && this.currentDrawPoint) {
-        this.finishStrokeSegment(this.currentDrawPoint, this.lastPoint);
-      }
+      const pt = this.extractPoint(e);
+      this.splineStroke.addPoint(pt);
+      this.renderActiveStroke();
+
+      // Bake completed stroke to main canvas
+      this.ctx.save();
+      this.ctx.globalCompositeOperation = 'multiply';
+      this.ctx.drawImage(this.activeCanvas, 0, 0);
+      this.ctx.restore();
+
+      // Clear active stroke layer
+      this.activeCtx.clearRect(0, 0, this.activeCanvas.width, this.activeCanvas.height);
+      this.splineStroke.clear();
 
       this.isDrawing = false;
       this.activePointerId = null;
-      this.lastPoint = null;
-      this.currentDrawPoint = null;
       this.strokeCount++;
 
       this.options.onStrokeEnd?.();
@@ -234,12 +289,12 @@ export class PencilEngine {
     if (e.pointerId === this.activePointerId) {
       this.isDrawing = false;
       this.activePointerId = null;
-      this.lastPoint = null;
-      this.currentDrawPoint = null;
+      this.activeCtx.clearRect(0, 0, this.activeCanvas.width, this.activeCanvas.height);
+      this.splineStroke.clear();
     }
   }
 
-  private extractPoint(e: PointerEvent): Point {
+  private extractPoint(e: PointerEvent): StrokePoint {
     const rect = this.canvas.getBoundingClientRect();
     const x = (e.clientX - rect.left) * this.dpr;
     const y = (e.clientY - rect.top) * this.dpr;
@@ -259,178 +314,139 @@ export class PencilEngine {
 
     const azimuthAngle = e.azimuthAngle || 0;
 
-    return { x, y, pressure, altitudeAngle, azimuthAngle };
+    return { x, y, pressure, altitudeAngle, azimuthAngle, time: e.timeStamp };
   }
 
   /**
-   * Draws a pencil dot at initial contact
+   * Renders the active stroke cleanly onto the overlay canvas.
+   * By drawing onto a dedicated active layer, overlapping segments never multiply
+   * against each other, completely eliminating node blobs and banding stripes.
    */
-  private drawPencilDot(pt: Point): void {
-    const isShading = pt.altitudeAngle < 0.65;
+  private renderActiveStroke(): void {
+    const pts = this.splineStroke.getPoints();
+    if (pts.length === 0) return;
 
-    this.ctx.save();
-    this.ctx.globalCompositeOperation = 'multiply';
+    this.activeCtx.clearRect(0, 0, this.activeCanvas.width, this.activeCanvas.height);
+
+    // Determine if tilt shading is active (< 0.38 rad / ~22 degrees)
+    const latestPt = pts[pts.length - 1];
+    const isShading = latestPt.altitudeAngle < 0.38;
+
+    this.activeCtx.save();
 
     if (isShading) {
-      const radius = Math.max(1, this.baseRadius * this.dpr * (0.4 + pt.pressure * 1.6));
-      const stamp = PencilTexture.createStamp(radius, pt.altitudeAngle);
-      this.ctx.globalAlpha = Math.min(1.0, 0.15 + pt.pressure * 0.25);
-      this.ctx.translate(pt.x, pt.y);
-      const angle = pt.azimuthAngle ? pt.azimuthAngle + Math.PI / 2 : 0;
-      this.ctx.rotate(angle);
-      this.ctx.drawImage(stamp, -stamp.width / 2, -stamp.height / 2);
+      this.renderShadingStroke(pts);
     } else {
-      const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + pt.pressure * 1.5));
-      // 1. Soft graphite feathered edge (antialiasing bloom)
-      this.ctx.beginPath();
-      this.ctx.arc(pt.x, pt.y, radius * 1.2, 0, Math.PI * 2);
-      this.ctx.fillStyle = '#222222';
-      this.ctx.globalAlpha = Math.min(0.25, 0.10 + pt.pressure * 0.15);
-      this.ctx.fill();
-
-      // 2. High-precision antialiased dark graphite core
-      this.ctx.beginPath();
-      this.ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
-      this.ctx.fillStyle = '#121212';
-      this.ctx.globalAlpha = Math.min(1.0, 0.70 + pt.pressure * 0.30);
-      this.ctx.fill();
+      this.renderLineStroke();
     }
 
-    this.ctx.restore();
+    this.activeCtx.restore();
   }
 
   /**
-   * Smoothly draws a pencil curve segment using Midpoint Quadratic Bezier
-   * interpolation with dual-pass antialiasing for line mode.
-   * Shading mode stamps per-interpolated pressure/altitude along the same
-   * bezier path so fast strokes don't show pair-constant banding.
+   * Normal Line Mode: Renders a unified spline ribbon with dual-pass graphite texture.
+   * No segment caps or discrete steps — resulting in a perfectly solid, continuous stroke.
    */
-  private drawPencilCurveSegment(pPrev: Point, pNext: Point): void {
-    const dx = pNext.x - pPrev.x;
-    const dy = pNext.y - pPrev.y;
-    const dist = Math.hypot(dx, dy);
+  private renderLineStroke(): void {
+    // Pass 1: Soft graphite powder bloom / halo
+    const haloPath = this.splineStroke.createRibbonPath(this.baseRadius, this.dpr, 1.18);
+    if (haloPath) {
+      this.activeCtx.fillStyle = '#262626';
+      this.activeCtx.globalAlpha = 0.16;
+      this.activeCtx.fill(haloPath);
+    }
 
-    if (dist < 0.1) return;
+    // Pass 2: High-density core graphite line
+    const corePath = this.splineStroke.createRibbonPath(this.baseRadius, this.dpr, 1.0);
+    if (corePath) {
+      this.activeCtx.fillStyle = '#141414';
+      this.activeCtx.globalAlpha = 0.88;
+      this.activeCtx.fill(corePath);
+    }
+  }
 
-    // Smooth pressure transitions to eliminate step artifacts
-    this.smoothedPressure = this.smoothedPressure * 0.6 + pNext.pressure * 0.4;
-    const avgAltitude = (pPrev.altitudeAngle + pNext.altitudeAngle) / 2;
-    const isShading = avgAltitude < 0.65;
+  /**
+   * Tilt Shading Mode: High-density graphite stamps along Catmull-Rom spline path
+   * with deterministic micro-jitter to prevent periodic moire / caterpillar stripes.
+   */
+  private renderShadingStroke(pts: StrokePoint[]): void {
+    const len = pts.length;
+    if (len === 1) {
+      const p = pts[0];
+      const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + p.pressure * 1.5));
+      const stamp = PencilTexture.createStamp(radius, p.altitudeAngle);
+      this.activeCtx.globalAlpha = Math.min(0.65, 0.25 + p.pressure * 0.4);
+      this.activeCtx.save();
+      this.activeCtx.translate(p.x, p.y);
+      const angle = p.azimuthAngle ? p.azimuthAngle + Math.PI / 2 : 0;
+      this.activeCtx.rotate(angle);
+      this.activeCtx.drawImage(stamp, -stamp.width / 2, -stamp.height / 2);
+      this.activeCtx.restore();
+      return;
+    }
 
-    // Midpoint between previous point and current point (quadratic smoothing)
-    const midX = (pPrev.x + pNext.x) / 2;
-    const midY = (pPrev.y + pNext.y) / 2;
+    for (let i = 0; i < len - 1; i++) {
+      const p0 = i > 0 ? pts[i - 1] : pts[i];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = i + 2 < len ? pts[i + 2] : p2;
 
-    const startX = this.currentDrawPoint ? this.currentDrawPoint.x : pPrev.x;
-    const startY = this.currentDrawPoint ? this.currentDrawPoint.y : pPrev.y;
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
 
-    this.ctx.save();
-    this.ctx.globalCompositeOperation = 'multiply';
+      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      const avgPressure = (p1.pressure + p2.pressure) / 2;
+      const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + avgPressure * 1.5));
 
-    if (isShading) {
-      // Tilt Shading: diffuse graphite stamps along the bezier path,
-      // aligned with pen tilt azimuth. Width and density interpolate
-      // PER STAMP so long fast pairs don't band.
-      const radiusAt = (pressure: number): number =>
-        Math.max(1, this.baseRadius * this.dpr * (0.4 + pressure * 1.6));
-      const rMax = Math.max(radiusAt(pPrev.pressure), radiusAt(pNext.pressure));
-      const stepSize = Math.max(2, rMax * 0.8);
+      // Ultra-fine step size (18% of radius) to eliminate stamp gaps and banding
+      const stepSize = Math.max(1.2, radius * 0.18);
       const steps = Math.max(1, Math.ceil(dist / stepSize));
 
-      const avgAzimuth = (pPrev.azimuthAngle + pNext.azimuthAngle) / 2;
-      const angle = avgAzimuth ? avgAzimuth + Math.PI / 2 : Math.atan2(dy, dx) + Math.PI / 2;
+      const avgAzimuth = (p1.azimuthAngle + p2.azimuthAngle) / 2;
+      const angle = avgAzimuth
+        ? avgAzimuth + Math.PI / 2
+        : Math.atan2(p2.y - p1.y, p2.x - p1.x) + Math.PI / 2;
 
-      for (let i = 1; i <= steps; i++) {
-        const t = i / steps;
+      for (let s = 1; s <= steps; s++) {
+        const t = s / steps;
         const invT = 1 - t;
-        const x = invT * invT * startX + 2 * invT * t * pPrev.x + t * t * midX;
-        const y = invT * invT * startY + 2 * invT * t * pPrev.y + t * t * midY;
+        const bx =
+          invT * invT * invT * p1.x +
+          3 * invT * invT * t * cp1x +
+          3 * invT * t * t * cp2x +
+          t * t * t * p2.x;
+        const by =
+          invT * invT * invT * p1.y +
+          3 * invT * invT * t * cp1y +
+          3 * invT * t * t * cp2y +
+          t * t * t * p2.y;
 
-        const pressure = pPrev.pressure + (pNext.pressure - pPrev.pressure) * t;
-        const altitude = pPrev.altitudeAngle + (pNext.altitudeAngle - pPrev.altitudeAngle) * t;
-        const stamp = PencilTexture.createStamp(radiusAt(pressure), altitude);
-        this.ctx.globalAlpha = Math.min(1.0, 0.15 + pressure * 0.25);
+        const pressure = p1.pressure + (p2.pressure - p1.pressure) * t;
+        const altitude = p1.altitudeAngle + (p2.altitudeAngle - p1.altitudeAngle) * t;
+        const stamp = PencilTexture.createStamp(radius, altitude);
 
-        this.ctx.save();
-        this.ctx.translate(x, y);
-        this.ctx.rotate(angle);
-        this.ctx.drawImage(stamp, -stamp.width / 2, -stamp.height / 2);
-        this.ctx.restore();
+        // Deterministic trigonometric micro-jitter breaks periodic banding without flickering
+        const jitterX = Math.sin(s * 12.9898 + i * 78.233) * 0.6;
+        const jitterY = Math.cos(s * 12.9898 + i * 78.233) * 0.6;
+
+        this.activeCtx.globalAlpha = Math.min(0.55, 0.18 + pressure * 0.35);
+        this.activeCtx.save();
+        this.activeCtx.translate(bx + jitterX, by + jitterY);
+        this.activeCtx.rotate(angle);
+        this.activeCtx.drawImage(stamp, -stamp.width / 2, -stamp.height / 2);
+        this.activeCtx.restore();
       }
-    } else {
-      const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + this.smoothedPressure * 1.5));
-      // Normal Line Mode: Dual-pass antialiased Quadratic Bezier curve
-      // Pass 1: Soft feathering halo (prevents harsh staircases while preserving graphite look)
-      this.ctx.beginPath();
-      this.ctx.moveTo(startX, startY);
-      this.ctx.quadraticCurveTo(pPrev.x, pPrev.y, midX, midY);
-      this.ctx.lineCap = 'round';
-      this.ctx.lineJoin = 'round';
-      this.ctx.lineWidth = radius * 2.3;
-      this.ctx.strokeStyle = '#222222';
-      this.ctx.globalAlpha = Math.min(0.25, 0.10 + this.smoothedPressure * 0.15);
-      this.ctx.stroke();
-
-      // Pass 2: High-contrast solid core with native subpixel antialiasing
-      this.ctx.beginPath();
-      this.ctx.moveTo(startX, startY);
-      this.ctx.quadraticCurveTo(pPrev.x, pPrev.y, midX, midY);
-      this.ctx.lineCap = 'round';
-      this.ctx.lineJoin = 'round';
-      this.ctx.lineWidth = radius * 2.0;
-      this.ctx.strokeStyle = '#121212';
-      this.ctx.globalAlpha = Math.min(1.0, 0.70 + this.smoothedPressure * 0.30);
-      this.ctx.stroke();
     }
-
-    this.ctx.restore();
-
-    // Advance drawing cursor to midpoint
-    this.currentDrawPoint = { x: midX, y: midY };
-  }
-
-  /**
-   * Finalizes the stroke from the last midpoint to the final release point
-   */
-  private finishStrokeSegment(startPt: { x: number; y: number }, endPt: Point): void {
-    const avgPressure = this.smoothedPressure;
-    const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + avgPressure * 1.5));
-    const isShading = endPt.altitudeAngle < 0.65;
-
-    if (isShading) return;
-
-    this.ctx.save();
-    this.ctx.globalCompositeOperation = 'multiply';
-
-    // Soft feathering halo
-    this.ctx.beginPath();
-    this.ctx.moveTo(startPt.x, startPt.y);
-    this.ctx.lineTo(endPt.x, endPt.y);
-    this.ctx.lineCap = 'round';
-    this.ctx.lineJoin = 'round';
-    this.ctx.lineWidth = radius * 2.3;
-    this.ctx.strokeStyle = '#222222';
-    this.ctx.globalAlpha = Math.min(0.25, 0.10 + avgPressure * 0.15);
-    this.ctx.stroke();
-
-    // Solid core line
-    this.ctx.beginPath();
-    this.ctx.moveTo(startPt.x, startPt.y);
-    this.ctx.lineTo(endPt.x, endPt.y);
-    this.ctx.lineCap = 'round';
-    this.ctx.lineJoin = 'round';
-    this.ctx.lineWidth = radius * 2.0;
-    this.ctx.strokeStyle = '#121212';
-    this.ctx.globalAlpha = Math.min(1.0, 0.70 + avgPressure * 0.30);
-    this.ctx.stroke();
-
-    this.ctx.restore();
   }
 
   /**
    * Reverts to the previous stroke state
    */
   public undo(): boolean {
+    this.activeCtx.clearRect(0, 0, this.activeCanvas.width, this.activeCanvas.height);
+    this.splineStroke.clear();
     const success = this.undoManager.undo(this.canvas);
     if (success && this.strokeCount > 0) {
       this.strokeCount--;
@@ -443,6 +459,8 @@ export class PencilEngine {
    * Clears the canvas and resets undo history for a fresh white page (Mekuru)
    */
   public clearCanvas(): void {
+    this.activeCtx.clearRect(0, 0, this.activeCanvas.width, this.activeCanvas.height);
+    this.splineStroke.clear();
     this.fillPaperBackground();
     this.undoManager.clear();
     this.strokeCount = 0;

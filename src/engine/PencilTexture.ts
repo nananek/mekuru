@@ -21,9 +21,9 @@ export class PencilTexture {
     // When tilted flat, the tip flattens into a wider ellipse. The expansion
     // is capped: tilt sensors can spike at contact, and an unbounded ellipse
     // reads as a stray dash at stroke starts.
-    const isShading = altitudeAngle < 0.65;
+    const isShading = altitudeAngle < 0.38;
     const tiltScale = isShading
-      ? Math.min(2.0, 1.0 + (1.0 - altitudeAngle / 0.65) * 2.5)
+      ? Math.min(2.5, 1.0 + (1.0 - altitudeAngle / 0.38) * 2.5)
       : 1.0;
 
     // Fine-grained key: coarse quantization previously returned wrong-sized

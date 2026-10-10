@@ -8,6 +8,7 @@ import { db } from './db/database';
 import { GalleryModal } from './gallery/GalleryModal';
 import { AuthModal } from './ui/AuthModal';
 import { Toast } from './ui/Toast';
+import { DebugService } from './services/DebugService';
 import { registerSW } from 'virtual:pwa-register';
 
 // Register Service Worker for PWA
@@ -111,13 +112,24 @@ document.addEventListener('DOMContentLoaded', () => {
   engine = new PencilEngine(canvasEl, {
     onStrokeStart: () => {
       hud.setDrawingState(true);
+      if (DebugService.isDebugEnabled()) {
+        DebugService.startStroke();
+      }
       // Auto-start timer on first stroke of page if timer preset is set and not running
       if (timer.getDuration() > 0 && !timer.getIsRunning()) {
         timer.start();
       }
     },
+    onPoint: (pt) => {
+      if (DebugService.isDebugEnabled()) {
+        DebugService.recordPoint(pt);
+      }
+    },
     onStrokeEnd: () => {
       hud.setDrawingState(false);
+      if (DebugService.isDebugEnabled()) {
+        DebugService.finishStroke(canvasEl);
+      }
     },
     onUndoChange: (canUndo) => {
       hud.setCanUndo(canUndo);
@@ -129,6 +141,26 @@ document.addEventListener('DOMContentLoaded', () => {
       executeMekuru();
     },
   });
+
+  // Start background live bridge and HUD badge if debug mode is on
+  if (DebugService.isDebugEnabled()) {
+    DebugService.startBridgeWorker();
+
+    const debugBadge = document.createElement('div');
+    debugBadge.id = 'debug-status-badge';
+    debugBadge.className =
+      'fixed top-2 left-2 z-50 px-2 py-1 bg-black/70 backdrop-blur-sm text-green-400 text-xs font-mono rounded pointer-events-none select-none border border-green-500/30 transition-opacity';
+    debugBadge.textContent = '● DEBUG API ACTIVE';
+    document.body.appendChild(debugBadge);
+
+    DebugService.onStatus((status) => {
+      debugBadge.textContent = `● ${status}`;
+      debugBadge.style.opacity = '1';
+      setTimeout(() => {
+        debugBadge.textContent = '● DEBUG API ACTIVE';
+      }, 3500);
+    });
+  }
 
   // Corner HUD Initialization
   hud = new CanvasHUD(hudContainer, timer, {

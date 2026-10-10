@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ja" class="h-full w-full bg-[#f8f6f0] text-[#1a1a1a]">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mekuru Debug Workbench - LLM Live API</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body class="h-full w-full flex flex-col font-sans bg-[#f4f2ec]">
+    <!-- Top Header -->
+    <header class="flex-none bg-[#1c1b18] text-[#fdfbf7] px-6 py-3.5 flex items-center justify-between border-b border-black/20 shadow-sm">
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-sm font-semibold tracking-wider hover:opacity-80 flex items-center gap-2">
+          <span>← Mekuru</span>
+        </a>
+        <span class="text-white/20">|</span>
+        <h1 class="text-sm font-bold tracking-wide uppercase text-white/90">Debug Workbench & LLM Live Bridge</h1>
+      </div>
+      <div class="flex items-center gap-4 text-xs">
+        <div id="bridge-status-indicator" class="flex items-center gap-2 px-3 py-1 rounded-full bg-yellow-500/20 text-yellow-300 font-mono border border-yellow-500/30">
+          <span class="w-2 h-2 rounded-full bg-yellow-400 animate-pulse"></span>
+          <span id="bridge-status-text">Bridge: Connecting...</span>
+        </div>
+        <div class="text-white/50 font-mono text-[11px]" id="job-counter">Jobs rendered: 0</div>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <div class="flex-1 flex flex-col lg:flex-row overflow-hidden">
+      <!-- Left Panel: Controls & Presets -->
+      <aside class="w-full lg:w-80 flex-none bg-white border-r border-black/10 flex flex-col overflow-y-auto p-4 gap-5">
+        <!-- Live Bridge Status Banner -->
+        <div class="p-3.5 rounded-xl bg-neutral-900 text-white text-xs space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-green-400 flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-green-400"></span>
+              LLM Live Bridge
+            </span>
+            <span class="text-[10px] text-white/50 font-mono">PORT 3000</span>
+          </div>
+          <p class="text-[11px] text-white/70 leading-relaxed">
+            このタブを開いている間、LLMが <code>POST /api/debug/render</code> に送信したストロークをリアルタイムでブラウザ描画し、描画結果PNGを返します。
+          </p>
+        </div>
+
+        <!-- Presets Suite -->
+        <div>
+          <h2 class="text-xs font-bold uppercase tracking-wider text-black/60 mb-2.5 flex items-center justify-between">
+            <span>標準テストプリセット</span>
+            <span class="text-[10px] font-normal text-black/40">Pencil Engine</span>
+          </h2>
+          <div class="grid grid-cols-1 gap-1.5" id="presets-container">
+            <button class="preset-btn px-3 py-2 text-left text-xs rounded-lg border border-black/10 hover:bg-black/5 active:scale-[0.99] transition font-medium" data-preset="tilt_flat_shading">
+              平坦傾きシェーディング (~11°)
+            </button>
+            <button class="preset-btn px-3 py-2 text-left text-xs rounded-lg border border-black/10 hover:bg-black/5 active:scale-[0.99] transition font-medium" data-preset="tilt_angle_transition">
+              傾き角度遷移 (垂直 → 寝かせ)
+            </button>
+            <button class="preset-btn px-3 py-2 text-left text-xs rounded-lg border border-black/10 hover:bg-black/5 active:scale-[0.99] transition font-medium" data-preset="pressure_ramp_line">
+              筆圧変化ランプ (0.05 → 1.0)
+            </button>
+            <button class="preset-btn px-3 py-2 text-left text-xs rounded-lg border border-black/10 hover:bg-black/5 active:scale-[0.99] transition font-medium" data-preset="smooth_s_curve">
+              滑らかなS字カーブ (ベジェ曲線)
+            </button>
+            <button class="preset-btn px-3 py-2 text-left text-xs rounded-lg border border-black/10 hover:bg-black/5 active:scale-[0.99] transition font-medium" data-preset="rapid_flick">
+              高速払いストローク (急加速)
+            </button>
+            <button class="preset-btn px-3 py-2 text-left text-xs rounded-lg border border-black/10 hover:bg-black/5 active:scale-[0.99] transition font-medium" data-preset="hatching_grid">
+              ハッチング格子 (乗算重ね塗り)
+            </button>
+          </div>
+        </div>
+
+        <!-- Recorded Strokes List -->
+        <div class="flex-1 flex flex-col min-h-[220px]">
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="text-xs font-bold uppercase tracking-wider text-black/60">
+              記録ストローク一覧
+            </h2>
+            <div class="flex items-center gap-2">
+              <button id="refresh-strokes-btn" class="text-[11px] text-blue-600 hover:underline">更新</button>
+              <button id="clear-strokes-btn" class="text-[11px] text-red-500 hover:underline">クリア</button>
+            </div>
+          </div>
+          <div id="strokes-list" class="flex-1 overflow-y-auto space-y-1.5 pr-1 text-xs">
+            <div class="text-black/40 text-[11px] p-2 text-center">記録されたストロークはありません</div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center: Canvas View & Drawing Stage -->
+      <main class="flex-1 flex flex-col bg-[#fdfbf7] overflow-hidden relative">
+        <div class="flex-none px-4 py-2 border-b border-black/10 bg-white/70 backdrop-blur-sm flex items-center justify-between text-xs">
+          <div class="flex items-center gap-3">
+            <span class="font-semibold text-black/80">Canvas プレビュー</span>
+            <span id="canvas-info" class="text-[11px] font-mono text-black/50">800 x 600 (DPR 2)</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="clear-canvas-btn" class="px-2.5 py-1 rounded bg-black/5 hover:bg-black/10 text-[11px] font-medium transition">
+              白紙クリア
+            </button>
+            <button id="send-stroke-btn" class="px-2.5 py-1 rounded bg-[#1c1b18] text-white hover:bg-black text-[11px] font-medium transition">
+              現在のストロークをAPIに保存
+            </button>
+          </div>
+        </div>
+
+        <!-- Drawing Canvas Area -->
+        <div class="flex-1 relative overflow-auto flex items-center justify-center p-4 bg-[#ece8de]">
+          <div class="relative shadow-xl rounded border border-black/15 bg-[#fdfbf7]">
+            <canvas id="debug-canvas" width="800" height="600" class="block cursor-crosshair touch-none"></canvas>
+            <div id="canvas-overlay-badge" class="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/60 text-white text-[10px] font-mono pointer-events-none">
+              Live Pencil Engine
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- Right Panel: Stroke Inspector & Data Visualizer -->
+      <aside class="w-full lg:w-96 flex-none bg-white border-l border-black/10 flex flex-col overflow-y-auto p-4 gap-4">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-black/60 pb-1 border-b border-black/5">
+          ストローク分析 & メトリクス
+        </h2>
+
+        <div id="inspector-empty" class="text-black/40 text-xs py-8 text-center">
+          ストロークを描くか、左の一覧から選択してください
+        </div>
+
+        <div id="inspector-content" class="hidden space-y-4 text-xs">
+          <!-- Summary Cards -->
+          <div class="grid grid-cols-2 gap-2">
+            <div class="p-2.5 rounded-lg bg-black/[0.03] border border-black/5">
+              <div class="text-[10px] text-black/50 font-medium">ポイント数</div>
+              <div id="stat-points" class="text-base font-bold font-mono mt-0.5">0</div>
+            </div>
+            <div class="p-2.5 rounded-lg bg-black/[0.03] border border-black/5">
+              <div class="text-[10px] text-black/50 font-medium">描画モード</div>
+              <div id="stat-mode" class="text-base font-bold font-mono mt-0.5">Normal Line</div>
+            </div>
+            <div class="p-2.5 rounded-lg bg-black/[0.03] border border-black/5">
+              <div class="text-[10px] text-black/50 font-medium">最小傾き角度</div>
+              <div id="stat-altitude" class="text-base font-bold font-mono mt-0.5">1.57 rad</div>
+            </div>
+            <div class="p-2.5 rounded-lg bg-black/[0.03] border border-black/5">
+              <div class="text-[10px] text-black/50 font-medium">平均筆圧</div>
+              <div id="stat-pressure" class="text-base font-bold font-mono mt-0.5">0.50</div>
+            </div>
+          </div>
+
+          <!-- Re-render Action -->
+          <button id="rerender-btn" class="w-full px-3 py-2 rounded-lg bg-[#1c1b18] text-[#fdfbf7] text-xs font-medium hover:bg-black transition active:scale-[0.99] flex items-center justify-center gap-1.5 shadow-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+            <span>現在のエンジンで再描画して比較</span>
+          </button>
+
+          <!-- Captured Image Thumbnail -->
+          <div id="captured-image-box" class="hidden">
+            <div class="text-[11px] font-semibold text-black/70 mb-1">保存時レンダリング画像</div>
+            <img id="captured-img" src="" alt="Captured stroke" class="w-full rounded border border-black/10 bg-[#fdfbf7] max-h-48 object-contain" />
+          </div>
+
+          <!-- Points Data Table Preview -->
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <div class="text-[11px] font-semibold text-black/70">ポイント生データ (先頭10件)</div>
+              <button id="copy-json-btn" class="text-[10px] text-blue-600 hover:underline">JSONコピー</button>
+            </div>
+            <div class="border border-black/10 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+              <table class="w-full text-[10px] font-mono text-left">
+                <thead class="bg-black/5 text-black/60 sticky top-0">
+                  <tr>
+                    <th class="p-1.5">#</th>
+                    <th class="p-1.5">X</th>
+                    <th class="p-1.5">Y</th>
+                    <th class="p-1.5">Press</th>
+                    <th class="p-1.5">Alt(rad)</th>
+                  </tr>
+                </thead>
+                <tbody id="points-tbody" class="divide-y divide-black/5"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <script type="module" src="/src/debug.ts"></script>
+  </body>
+</html>

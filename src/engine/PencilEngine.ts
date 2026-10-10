@@ -8,6 +8,7 @@ export interface PencilEngineOptions {
   onUndoChange?: (canUndo: boolean) => void;
   onTwoFingerTap?: () => void;
   onTwoFingerSwipe?: (direction: 'left' | 'right') => void;
+  onPoint?: (point: Point) => void;
 }
 
 export interface Point {
@@ -169,6 +170,7 @@ export class PencilEngine {
     this.smoothedPressure = pt.pressure;
     this.smoothedPoint = { x: pt.x, y: pt.y };
     this.drawPencilDot(pt);
+    this.options.onPoint?.(pt);
     this.lastPoint = pt;
     this.currentDrawPoint = { x: pt.x, y: pt.y };
   }
@@ -227,9 +229,11 @@ export class PencilEngine {
         if (this.lastPoint && this.currentDrawPoint) {
           this.drawPencilCurveSegment(this.lastPoint, pt);
         }
+        this.options.onPoint?.(pt);
         this.lastPoint = pt;
       } else {
         this.smoothedPoint = { x: rawPt.x, y: rawPt.y };
+        this.options.onPoint?.(rawPt);
         this.lastPoint = rawPt;
       }
     }
@@ -541,5 +545,70 @@ export class PencilEngine {
 
   public getStrokeCount(): number {
     return this.strokeCount;
+  }
+
+  /**
+   * Replays an array of point events directly onto canvas.
+   * Runs the exact same smoothing, bezier interpolation, and shading pipeline.
+   * Essential for live debugging, headless automated evaluation, and regression checks.
+   */
+  public replayStroke(points: Point[]): void {
+    if (!points || points.length === 0) return;
+
+    this.undoManager.pushState(this.canvas);
+    this.options.onUndoChange?.(this.undoManager.canUndo());
+    this.options.onStrokeStart?.();
+
+    const firstPt = points[0];
+    this.smoothedPressure = firstPt.pressure;
+    this.smoothedPoint = { x: firstPt.x, y: firstPt.y };
+    this.drawPencilDot(firstPt);
+    let lastPt = firstPt;
+    this.currentDrawPoint = { x: firstPt.x, y: firstPt.y };
+
+    for (let i = 1; i < points.length; i++) {
+      const rawPt = points[i];
+      const dx = rawPt.x - this.smoothedPoint.x;
+      const dy = rawPt.y - this.smoothedPoint.y;
+      const dist = Math.hypot(dx, dy);
+
+      // Streamline jitter reduction filter (skip tiny noise unless end of stroke)
+      if (dist < 0.35 && i < points.length - 1) {
+        continue;
+      }
+
+      const factor = 0.75;
+      const smoothX = this.smoothedPoint.x + dx * factor;
+      const smoothY = this.smoothedPoint.y + dy * factor;
+      this.smoothedPoint = { x: smoothX, y: smoothY };
+
+      const pt: Point = {
+        x: smoothX,
+        y: smoothY,
+        pressure: rawPt.pressure,
+        altitudeAngle: rawPt.altitudeAngle,
+        azimuthAngle: rawPt.azimuthAngle,
+        pointerType: rawPt.pointerType,
+      };
+
+      if (this.currentDrawPoint) {
+        this.drawPencilCurveSegment(lastPt, pt);
+      }
+      lastPt = pt;
+    }
+
+    if (this.currentDrawPoint && lastPt) {
+      this.finishStrokeSegment(this.currentDrawPoint, lastPt);
+    }
+
+    this.isDrawing = false;
+    this.activePointerId = null;
+    this.lastPoint = null;
+    this.currentDrawPoint = null;
+    this.smoothedPoint = null;
+    this.strokeCount++;
+
+    this.options.onStrokeEnd?.();
+    this.options.onUndoChange?.(this.undoManager.canUndo());
   }
 }

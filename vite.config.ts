@@ -42,6 +42,14 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    rollupOptions: {
+      input: {
+        main: new URL('./index.html', import.meta.url).pathname,
+        debug: new URL('./debug.html', import.meta.url).pathname,
+      },
+    },
+  },
   server: {
     port: 3000,
     host: true,

@@ -1,5 +1,6 @@
 mod auth;
 mod db;
+mod debug;
 mod sketch;
 
 use clap::{Parser, Subcommand};
@@ -173,6 +174,25 @@ async fn run_server(
         .route("/{id}", axum::routing::delete(sketch::delete_sketch))
         .with_state(sketch_state);
 
+    let debug_state = debug::DebugState::new(db.clone());
+    let debug_router = axum::Router::new()
+        .route(
+            "/strokes",
+            axum::routing::get(debug::list_debug_strokes)
+                .post(debug::save_debug_stroke_json)
+                .delete(debug::clear_debug_strokes),
+        )
+        .route("/strokes/upload", axum::routing::post(debug::save_debug_stroke_multipart))
+        .route("/strokes/latest", axum::routing::get(debug::get_latest_debug_stroke))
+        .route("/strokes/{id}", axum::routing::get(debug::get_debug_stroke))
+        .route("/strokes/{id}/image", axum::routing::get(debug::get_debug_stroke_image))
+        .route("/presets", axum::routing::get(debug::get_debug_presets))
+        .route("/render", axum::routing::post(debug::render_stroke))
+        .route("/bridge/poll", axum::routing::get(debug::bridge_poll))
+        .route("/bridge/response", axum::routing::post(debug::bridge_response))
+        .route("/status", axum::routing::get(debug::debug_status))
+        .with_state(debug_state);
+
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -181,6 +201,7 @@ async fn run_server(
     let api_router = axum::Router::new()
         .nest("/auth", auth_router)
         .nest("/sketches", sketch_router)
+        .nest("/debug", debug_router)
         .layer(cors);
 
     // Static SPA file serving

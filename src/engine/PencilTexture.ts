@@ -6,25 +6,26 @@
 export class PencilTexture {
   // Reused stamps: no per-segment canvas allocation.
   private static stampCache = new Map<string, HTMLCanvasElement>();
-  private static readonly STAMP_CACHE_LIMIT = 32;
+  private static readonly STAMP_CACHE_LIMIT = 64;
 
   /**
    * Builds a cached soft stamp for stamping along the stroke path.
-   * Width follows pen tilt (pencil-side shading); the shape is a plain
-   * radial falloff with no speckle.
+   * Width follows pen tilt (pencil-side shading); the shape has genuine
+   * elliptical radial falloff with zero clipping or banding.
    */
   public static createStamp(
     radius: number,
     altitudeAngle: number
   ): HTMLCanvasElement {
     // Pen tilt: altitudeAngle is 0 (flat on table) to Math.PI / 2 (perpendicular).
-    // When tilted flat, the tip flattens into a wider ellipse. The expansion
-    // is capped: tilt sensors can spike at contact, and an unbounded ellipse
-    // reads as a stray dash at stroke starts.
-    const isShading = altitudeAngle > 0 && altitudeAngle < 0.38;
-    const tiltScale = isShading
-      ? Math.min(2.5, 1.0 + (1.0 - altitudeAngle / 0.38) * 2.5)
-      : 1.0;
+    // Shading triggers when tilted (altitudeAngle < 0.45 rad / ~25.8 deg).
+    const SHADING_THRESHOLD = 0.45;
+    const isShading = altitudeAngle > 0 && altitudeAngle < SHADING_THRESHOLD;
+    const tiltFactor = isShading
+      ? Math.max(0, 1.0 - altitudeAngle / SHADING_THRESHOLD)
+      : 0;
+    // Expands smoothly from 1.0 (vertical) up to 4.2x (flat on paper)
+    const tiltScale = 1.0 + tiltFactor * 3.2;
 
     // Fine-grained key: coarse quantization previously returned wrong-sized
     // stamps mid-stroke, which read as stripes along the line.
@@ -45,9 +46,12 @@ export class PencilTexture {
     radius: number,
     tiltScale: number
   ): HTMLCanvasElement {
+    const rx = Math.max(1.5, radius * tiltScale);
+    const ry = Math.max(1.5, radius);
 
-    const width = Math.max(2, Math.round(radius * 2 * tiltScale));
-    const height = Math.max(2, Math.round(radius * 2));
+    // Padding ensures that antialiased edges taper to complete 0 opacity without clipping
+    const width = Math.max(4, Math.ceil(rx * 2) + 4);
+    const height = Math.max(4, Math.ceil(ry * 2) + 4);
 
     const stamp = document.createElement('canvas');
     stamp.width = width;
@@ -57,19 +61,22 @@ export class PencilTexture {
 
     const cx = width / 2;
     const cy = height / 2;
-    const rx = width / 2;
-    const ry = height / 2;
 
-    // Plain soft radial falloff, no speckle.
-    const grad = sctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rx, ry));
-    grad.addColorStop(0, 'rgba(26, 26, 26, 0.45)');
-    grad.addColorStop(0.5, 'rgba(35, 35, 35, 0.25)');
-    grad.addColorStop(0.85, 'rgba(40, 40, 40, 0.08)');
-    grad.addColorStop(1, 'rgba(40, 40, 40, 0)');
-
+    // True elliptical gradient: scale the circular radial gradient by tiltScale
+    // so every angle fades out completely to 0 alpha at radius ry.
     sctx.save();
+    sctx.translate(cx, cy);
+    sctx.scale(tiltScale, 1.0);
+
+    const grad = sctx.createRadialGradient(0, 0, 0, 0, 0, ry);
+    grad.addColorStop(0.0, 'rgba(28, 28, 28, 0.36)');
+    grad.addColorStop(0.3, 'rgba(32, 32, 32, 0.22)');
+    grad.addColorStop(0.65, 'rgba(38, 38, 38, 0.08)');
+    grad.addColorStop(0.90, 'rgba(42, 42, 42, 0.015)');
+    grad.addColorStop(1.0, 'rgba(42, 42, 42, 0)');
+
     sctx.beginPath();
-    sctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    sctx.arc(0, 0, ry, 0, Math.PI * 2);
     sctx.fillStyle = grad;
     sctx.fill();
     sctx.restore();

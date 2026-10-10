@@ -20,6 +20,8 @@ export interface Point {
 }
 
 export class PencilEngine {
+  public static readonly TILT_SHADING_THRESHOLD = 0.45; // ~25.8 degrees tilt trigger
+
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private dpr: number = 1;
@@ -27,6 +29,7 @@ export class PencilEngine {
   private isDrawing: boolean = false;
   private activePointerId: number | null = null;
   private lastPoint: Point | null = null;
+  private smoothedPoint: { x: number; y: number } | null = null;
   private currentDrawPoint: { x: number; y: number } | null = null;
   private smoothedPressure: number = 0.5;
   private strokeCount: number = 0;
@@ -164,6 +167,7 @@ export class PencilEngine {
 
     const pt = this.extractPoint(e);
     this.smoothedPressure = pt.pressure;
+    this.smoothedPoint = { x: pt.x, y: pt.y };
     this.drawPencilDot(pt);
     this.lastPoint = pt;
     this.currentDrawPoint = { x: pt.x, y: pt.y };
@@ -192,11 +196,42 @@ export class PencilEngine {
       if (subEvent.pointerType === 'pen' && subEvent.pressure === 0) {
         continue;
       }
-      const pt = this.extractPoint(subEvent);
-      if (this.lastPoint && this.currentDrawPoint) {
-        this.drawPencilCurveSegment(this.lastPoint, pt);
+      const rawPt = this.extractPoint(subEvent);
+
+      // Streamline jitter reduction filter (eliminates digitizer quantization jaggies)
+      if (this.smoothedPoint) {
+        const dx = rawPt.x - this.smoothedPoint.x;
+        const dy = rawPt.y - this.smoothedPoint.y;
+        const dist = Math.hypot(dx, dy);
+
+        // Filter out subpixel jitter noise (< 0.35px)
+        if (dist < 0.35) {
+          continue;
+        }
+
+        // Adaptive low-pass smoothing factor: highly responsive with silky curvature
+        const factor = 0.75;
+        const smoothX = this.smoothedPoint.x + dx * factor;
+        const smoothY = this.smoothedPoint.y + dy * factor;
+        this.smoothedPoint = { x: smoothX, y: smoothY };
+
+        const pt: Point = {
+          x: smoothX,
+          y: smoothY,
+          pressure: rawPt.pressure,
+          altitudeAngle: rawPt.altitudeAngle,
+          azimuthAngle: rawPt.azimuthAngle,
+          pointerType: rawPt.pointerType,
+        };
+
+        if (this.lastPoint && this.currentDrawPoint) {
+          this.drawPencilCurveSegment(this.lastPoint, pt);
+        }
+        this.lastPoint = pt;
+      } else {
+        this.smoothedPoint = { x: rawPt.x, y: rawPt.y };
+        this.lastPoint = rawPt;
       }
-      this.lastPoint = pt;
     }
   }
 
@@ -220,6 +255,7 @@ export class PencilEngine {
       this.activePointerId = null;
       this.lastPoint = null;
       this.currentDrawPoint = null;
+      this.smoothedPoint = null;
       this.strokeCount++;
 
       this.options.onStrokeEnd?.();
@@ -238,6 +274,7 @@ export class PencilEngine {
       this.activePointerId = null;
       this.lastPoint = null;
       this.currentDrawPoint = null;
+      this.smoothedPoint = null;
     }
   }
 
@@ -272,15 +309,15 @@ export class PencilEngine {
     const isShading =
       pt.pointerType === 'pen' &&
       pt.altitudeAngle > 0 &&
-      pt.altitudeAngle < 0.38;
+      pt.altitudeAngle < PencilEngine.TILT_SHADING_THRESHOLD;
 
     this.ctx.save();
     this.ctx.globalCompositeOperation = 'multiply';
 
     if (isShading) {
-      const radius = Math.max(1, this.baseRadius * this.dpr * (0.4 + pt.pressure * 1.6));
+      const radius = Math.max(1, this.baseRadius * this.dpr * (0.45 + pt.pressure * 1.55));
       const stamp = PencilTexture.createStamp(radius, pt.altitudeAngle);
-      this.ctx.globalAlpha = Math.min(1.0, 0.15 + pt.pressure * 0.25);
+      this.ctx.globalAlpha = Math.min(0.40, 0.10 + pt.pressure * 0.20);
       this.ctx.translate(pt.x, pt.y);
       const angle = pt.azimuthAngle ? pt.azimuthAngle + Math.PI / 2 : 0;
       this.ctx.rotate(angle);
@@ -289,16 +326,16 @@ export class PencilEngine {
       const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + pt.pressure * 1.5));
       // 1. Soft graphite feathered edge (antialiasing bloom)
       this.ctx.beginPath();
-      this.ctx.arc(pt.x, pt.y, radius * 1.15, 0, Math.PI * 2);
+      this.ctx.arc(pt.x, pt.y, radius + Math.max(0.5, this.dpr * 0.4), 0, Math.PI * 2);
       this.ctx.fillStyle = '#222222';
-      this.ctx.globalAlpha = Math.min(0.25, 0.10 + pt.pressure * 0.15);
+      this.ctx.globalAlpha = Math.min(0.20, 0.07 + pt.pressure * 0.13);
       this.ctx.fill();
 
       // 2. High-precision antialiased dark graphite core
       this.ctx.beginPath();
       this.ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
-      this.ctx.fillStyle = '#121212';
-      this.ctx.globalAlpha = Math.min(1.0, 0.70 + pt.pressure * 0.30);
+      this.ctx.fillStyle = '#111111';
+      this.ctx.globalAlpha = Math.min(1.0, 0.75 + pt.pressure * 0.25);
       this.ctx.fill();
     }
 
@@ -308,8 +345,8 @@ export class PencilEngine {
   /**
    * Smoothly draws a pencil curve segment using Midpoint Quadratic Bezier
    * interpolation with dual-pass antialiasing for line mode.
-   * Shading mode stamps per-interpolated pressure/altitude along the same
-   * bezier path so fast strokes don't show pair-constant banding.
+   * Shading mode stamps per-interpolated pressure/altitude along the bezier path
+   * with dense overlapping so broad tilt strokes never show dotted line artifacts.
    */
   private drawPencilCurveSegment(pPrev: Point, pNext: Point): void {
     const dx = pNext.x - pPrev.x;
@@ -318,13 +355,13 @@ export class PencilEngine {
 
     if (dist < 0.1) return;
 
-    // Smooth pressure transitions to eliminate step artifacts
-    this.smoothedPressure = this.smoothedPressure * 0.6 + pNext.pressure * 0.4;
+    // Smooth pressure transitions with gentle EMA
+    this.smoothedPressure = this.smoothedPressure * 0.7 + pNext.pressure * 0.3;
     const avgAltitude = (pPrev.altitudeAngle + pNext.altitudeAngle) / 2;
     const isShading =
       pNext.pointerType === 'pen' &&
       avgAltitude > 0 &&
-      avgAltitude < 0.38;
+      avgAltitude < PencilEngine.TILT_SHADING_THRESHOLD;
 
     // Midpoint between previous point and current point (quadratic smoothing)
     const midX = (pPrev.x + pNext.x) / 2;
@@ -337,14 +374,20 @@ export class PencilEngine {
     this.ctx.globalCompositeOperation = 'multiply';
 
     if (isShading) {
-      // Tilt Shading: diffuse graphite stamps along the bezier path,
-      // aligned with pen tilt azimuth. Width and density interpolate
-      // PER STAMP so long fast pairs don't band.
+      // Approximate quadratic bezier curve length
+      const chordDist = Math.hypot(midX - startX, midY - startY);
+      const ctrlDist =
+        Math.hypot(pPrev.x - startX, pPrev.y - startY) +
+        Math.hypot(midX - pPrev.x, midY - pPrev.y);
+      const curveLen = (chordDist + ctrlDist) / 2;
+
       const radiusAt = (pressure: number): number =>
-        Math.max(1, this.baseRadius * this.dpr * (0.4 + pressure * 1.6));
-      const rMax = Math.max(radiusAt(pPrev.pressure), radiusAt(pNext.pressure));
-      const stepSize = Math.max(1.5, rMax * 0.35);
-      const steps = Math.max(1, Math.ceil(dist / stepSize));
+        Math.max(1, this.baseRadius * this.dpr * (0.45 + pressure * 1.55));
+      const rAvg = (radiusAt(pPrev.pressure) + radiusAt(pNext.pressure)) / 2;
+
+      // Dense overlapping stamp placement to completely eliminate dotted lines (spacing <= 18% of radius)
+      const stepSize = Math.max(0.75, rAvg * 0.18);
+      const steps = Math.max(1, Math.ceil(curveLen / stepSize));
 
       const avgAzimuth = (pPrev.azimuthAngle + pNext.azimuthAngle) / 2;
       const angle = avgAzimuth ? avgAzimuth + Math.PI / 2 : Math.atan2(dy, dx) + Math.PI / 2;
@@ -358,7 +401,9 @@ export class PencilEngine {
         const pressure = pPrev.pressure + (pNext.pressure - pPrev.pressure) * t;
         const altitude = pPrev.altitudeAngle + (pNext.altitudeAngle - pPrev.altitudeAngle) * t;
         const stamp = PencilTexture.createStamp(radiusAt(pressure), altitude);
-        this.ctx.globalAlpha = Math.min(1.0, 0.15 + pressure * 0.25);
+
+        // Soft diffuse shading alpha calibrated for dense overlapping
+        this.ctx.globalAlpha = Math.min(0.40, 0.08 + pressure * 0.16);
 
         this.ctx.save();
         this.ctx.translate(x, y);
@@ -375,20 +420,20 @@ export class PencilEngine {
       this.ctx.quadraticCurveTo(pPrev.x, pPrev.y, midX, midY);
       this.ctx.lineCap = 'round';
       this.ctx.lineJoin = 'round';
-      this.ctx.lineWidth = radius * 2.3;
+      this.ctx.lineWidth = radius * 2.0 + Math.max(1.0, this.dpr * 0.8);
       this.ctx.strokeStyle = '#222222';
-      this.ctx.globalAlpha = Math.min(0.25, 0.10 + this.smoothedPressure * 0.15);
+      this.ctx.globalAlpha = Math.min(0.20, 0.07 + this.smoothedPressure * 0.13);
       this.ctx.stroke();
 
-      // Pass 2: High-contrast solid core with native subpixel antialiasing
+      // Pass 2: High-contrast rich solid core with native subpixel antialiasing
       this.ctx.beginPath();
       this.ctx.moveTo(startX, startY);
       this.ctx.quadraticCurveTo(pPrev.x, pPrev.y, midX, midY);
       this.ctx.lineCap = 'round';
       this.ctx.lineJoin = 'round';
       this.ctx.lineWidth = radius * 2.0;
-      this.ctx.strokeStyle = '#121212';
-      this.ctx.globalAlpha = Math.min(1.0, 0.70 + this.smoothedPressure * 0.30);
+      this.ctx.strokeStyle = '#111111';
+      this.ctx.globalAlpha = Math.min(1.0, 0.75 + this.smoothedPressure * 0.25);
       this.ctx.stroke();
     }
 
@@ -403,38 +448,63 @@ export class PencilEngine {
    */
   private finishStrokeSegment(startPt: { x: number; y: number }, endPt: Point): void {
     const avgPressure = this.smoothedPressure;
-    const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + avgPressure * 1.5));
     const isShading =
       endPt.pointerType === 'pen' &&
       endPt.altitudeAngle > 0 &&
-      endPt.altitudeAngle < 0.38;
-
-    if (isShading) return;
+      endPt.altitudeAngle < PencilEngine.TILT_SHADING_THRESHOLD;
 
     this.ctx.save();
     this.ctx.globalCompositeOperation = 'multiply';
 
-    // Soft feathering halo
-    this.ctx.beginPath();
-    this.ctx.moveTo(startPt.x, startPt.y);
-    this.ctx.lineTo(endPt.x, endPt.y);
-    this.ctx.lineCap = 'round';
-    this.ctx.lineJoin = 'round';
-    this.ctx.lineWidth = radius * 2.3;
-    this.ctx.strokeStyle = '#222222';
-    this.ctx.globalAlpha = Math.min(0.25, 0.10 + avgPressure * 0.15);
-    this.ctx.stroke();
+    if (isShading) {
+      const dx = endPt.x - startPt.x;
+      const dy = endPt.y - startPt.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 0.1) {
+        const radius = Math.max(1, this.baseRadius * this.dpr * (0.45 + avgPressure * 1.55));
+        const stamp = PencilTexture.createStamp(radius, endPt.altitudeAngle);
+        const stepSize = Math.max(0.75, radius * 0.18);
+        const steps = Math.max(1, Math.ceil(dist / stepSize));
+        const angle = endPt.azimuthAngle ? endPt.azimuthAngle + Math.PI / 2 : Math.atan2(dy, dx) + Math.PI / 2;
 
-    // Solid core line
-    this.ctx.beginPath();
-    this.ctx.moveTo(startPt.x, startPt.y);
-    this.ctx.lineTo(endPt.x, endPt.y);
-    this.ctx.lineCap = 'round';
-    this.ctx.lineJoin = 'round';
-    this.ctx.lineWidth = radius * 2.0;
-    this.ctx.strokeStyle = '#121212';
-    this.ctx.globalAlpha = Math.min(1.0, 0.70 + avgPressure * 0.30);
-    this.ctx.stroke();
+        this.ctx.globalAlpha = Math.min(0.40, 0.08 + avgPressure * 0.16);
+
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps;
+          const x = startPt.x + dx * t;
+          const y = startPt.y + dy * t;
+          this.ctx.save();
+          this.ctx.translate(x, y);
+          this.ctx.rotate(angle);
+          this.ctx.drawImage(stamp, -stamp.width / 2, -stamp.height / 2);
+          this.ctx.restore();
+        }
+      }
+    } else {
+      const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + avgPressure * 1.5));
+
+      // Soft feathering halo
+      this.ctx.beginPath();
+      this.ctx.moveTo(startPt.x, startPt.y);
+      this.ctx.lineTo(endPt.x, endPt.y);
+      this.ctx.lineCap = 'round';
+      this.ctx.lineJoin = 'round';
+      this.ctx.lineWidth = radius * 2.0 + Math.max(1.0, this.dpr * 0.8);
+      this.ctx.strokeStyle = '#222222';
+      this.ctx.globalAlpha = Math.min(0.20, 0.07 + avgPressure * 0.13);
+      this.ctx.stroke();
+
+      // Solid core line
+      this.ctx.beginPath();
+      this.ctx.moveTo(startPt.x, startPt.y);
+      this.ctx.lineTo(endPt.x, endPt.y);
+      this.ctx.lineCap = 'round';
+      this.ctx.lineJoin = 'round';
+      this.ctx.lineWidth = radius * 2.0;
+      this.ctx.strokeStyle = '#111111';
+      this.ctx.globalAlpha = Math.min(1.0, 0.75 + avgPressure * 0.25);
+      this.ctx.stroke();
+    }
 
     this.ctx.restore();
   }

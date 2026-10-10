@@ -110,15 +110,6 @@ export class PencilEngine {
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.fillStyle = '#fdfbf7';
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-
-    // Apply faint paper grain
-    const noise = PencilTexture.getPaperNoisePattern(this.ctx);
-    if (noise) {
-      this.ctx.globalAlpha = 0.035;
-      this.ctx.fillStyle = noise;
-      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    }
-
     this.ctx.restore();
   }
 
@@ -193,6 +184,12 @@ export class PencilEngine {
 
     for (let i = 0; i < coalescedEvents.length; i++) {
       const subEvent = coalescedEvents[i];
+      // Apple Pencil hover reports pressure 0. Never draw from hover:
+      // with a missed pointerup this would streak from the stale lastPoint.
+      // (Contact moves always carry pressure > 0 on pen.)
+      if (subEvent.pointerType === 'pen' && subEvent.pressure === 0) {
+        continue;
+      }
       const pt = this.extractPoint(subEvent);
       if (this.lastPoint && this.currentDrawPoint) {
         this.drawPencilCurveSegment(this.lastPoint, pt);
@@ -269,20 +266,21 @@ export class PencilEngine {
    * Draws a pencil dot at initial contact
    */
   private drawPencilDot(pt: Point): void {
-    const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + pt.pressure * 1.5));
-    const isShading = pt.altitudeAngle < 0.38;
+    const isShading = pt.altitudeAngle < 0.65;
 
     this.ctx.save();
     this.ctx.globalCompositeOperation = 'multiply';
 
     if (isShading) {
+      const radius = Math.max(1, this.baseRadius * this.dpr * (0.4 + pt.pressure * 1.6));
       const stamp = PencilTexture.createStamp(radius, pt.altitudeAngle);
-      this.ctx.globalAlpha = Math.min(0.65, 0.25 + pt.pressure * 0.4);
+      this.ctx.globalAlpha = Math.min(1.0, 0.15 + pt.pressure * 0.25);
       this.ctx.translate(pt.x, pt.y);
       const angle = pt.azimuthAngle ? pt.azimuthAngle + Math.PI / 2 : 0;
       this.ctx.rotate(angle);
       this.ctx.drawImage(stamp, -stamp.width / 2, -stamp.height / 2);
     } else {
+      const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + pt.pressure * 1.5));
       // 1. Soft graphite feathered edge (antialiasing bloom)
       this.ctx.beginPath();
       this.ctx.arc(pt.x, pt.y, radius * 1.2, 0, Math.PI * 2);
@@ -302,8 +300,10 @@ export class PencilEngine {
   }
 
   /**
-   * Smoothly draws a pencil curve segment using Midpoint Quadratic Bezier interpolation
-   * with dual-pass antialiasing and graphite texture
+   * Smoothly draws a pencil curve segment using Midpoint Quadratic Bezier
+   * interpolation with dual-pass antialiasing for line mode.
+   * Shading mode stamps per-interpolated pressure/altitude along the same
+   * bezier path so fast strokes don't show pair-constant banding.
    */
   private drawPencilCurveSegment(pPrev: Point, pNext: Point): void {
     const dx = pNext.x - pPrev.x;
@@ -315,36 +315,41 @@ export class PencilEngine {
     // Smooth pressure transitions to eliminate step artifacts
     this.smoothedPressure = this.smoothedPressure * 0.6 + pNext.pressure * 0.4;
     const avgAltitude = (pPrev.altitudeAngle + pNext.altitudeAngle) / 2;
-    const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + this.smoothedPressure * 1.5));
+    const isShading = avgAltitude < 0.65;
 
-    // Calculate midpoint between previous point and current point
+    // Midpoint between previous point and current point (quadratic smoothing)
     const midX = (pPrev.x + pNext.x) / 2;
     const midY = (pPrev.y + pNext.y) / 2;
 
     const startX = this.currentDrawPoint ? this.currentDrawPoint.x : pPrev.x;
     const startY = this.currentDrawPoint ? this.currentDrawPoint.y : pPrev.y;
 
-    const isShading = avgAltitude < 0.38;
-
     this.ctx.save();
     this.ctx.globalCompositeOperation = 'multiply';
 
     if (isShading) {
-      // Tilt Shading: broad graphite smudge aligned with pen tilt / stroke
-      const stamp = PencilTexture.createStamp(radius, avgAltitude);
-      this.ctx.globalAlpha = Math.min(0.65, 0.25 + this.smoothedPressure * 0.4);
+      // Tilt Shading: diffuse graphite stamps along the bezier path,
+      // aligned with pen tilt azimuth. Width and density interpolate
+      // PER STAMP so long fast pairs don't band.
+      const radiusAt = (pressure: number): number =>
+        Math.max(1, this.baseRadius * this.dpr * (0.4 + pressure * 1.6));
+      const rMax = Math.max(radiusAt(pPrev.pressure), radiusAt(pNext.pressure));
+      const stepSize = Math.max(2, rMax * 0.8);
+      const steps = Math.max(1, Math.ceil(dist / stepSize));
 
       const avgAzimuth = (pPrev.azimuthAngle + pNext.azimuthAngle) / 2;
       const angle = avgAzimuth ? avgAzimuth + Math.PI / 2 : Math.atan2(dy, dx) + Math.PI / 2;
-
-      const stepSize = Math.max(1.5, radius * 0.35);
-      const steps = Math.max(1, Math.ceil(dist / stepSize));
 
       for (let i = 1; i <= steps; i++) {
         const t = i / steps;
         const invT = 1 - t;
         const x = invT * invT * startX + 2 * invT * t * pPrev.x + t * t * midX;
         const y = invT * invT * startY + 2 * invT * t * pPrev.y + t * t * midY;
+
+        const pressure = pPrev.pressure + (pNext.pressure - pPrev.pressure) * t;
+        const altitude = pPrev.altitudeAngle + (pNext.altitudeAngle - pPrev.altitudeAngle) * t;
+        const stamp = PencilTexture.createStamp(radiusAt(pressure), altitude);
+        this.ctx.globalAlpha = Math.min(1.0, 0.15 + pressure * 0.25);
 
         this.ctx.save();
         this.ctx.translate(x, y);
@@ -353,6 +358,7 @@ export class PencilEngine {
         this.ctx.restore();
       }
     } else {
+      const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + this.smoothedPressure * 1.5));
       // Normal Line Mode: Dual-pass antialiased Quadratic Bezier curve
       // Pass 1: Soft feathering halo (prevents harsh staircases while preserving graphite look)
       this.ctx.beginPath();
@@ -389,7 +395,7 @@ export class PencilEngine {
   private finishStrokeSegment(startPt: { x: number; y: number }, endPt: Point): void {
     const avgPressure = this.smoothedPressure;
     const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + avgPressure * 1.5));
-    const isShading = endPt.altitudeAngle < 0.38;
+    const isShading = endPt.altitudeAngle < 0.65;
 
     if (isShading) return;
 

@@ -7,6 +7,10 @@
 FROM node:20-bookworm-slim AS frontend-builder
 WORKDIR /app
 
+# Short commit SHA baked into the frontend as __APP_VERSION__ (shown in Settings).
+ARG GIT_SHA=dev
+ENV VITE_APP_SHA=${GIT_SHA}
+
 COPY package*.json ./
 RUN npm ci || npm install
 

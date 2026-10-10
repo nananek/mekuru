@@ -7,6 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use webauthn_rs::prelude::*;
+use webauthn_rs_core::proto::ResidentKeyRequirement;
 
 #[derive(Clone)]
 pub struct AuthState {
@@ -77,8 +78,16 @@ pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+/// Session user for endpoints that need authorization.
+/// Returns `None` when the request carries no (or an expired) session.
+pub(crate) fn session_user(headers: &HeaderMap, db: &Db) -> Option<User> {
+    let token = extract_session_token(headers)?;
+    db.get_session_user(&token).unwrap_or(None)
+}
+
 pub async fn register_start(
     State(state): State<AuthState>,
+    headers: HeaderMap,
     Json(payload): Json<RegisterStartRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let username = payload.username.trim();
@@ -89,12 +98,23 @@ pub async fn register_start(
         ));
     }
 
-    let user = state.db.get_or_create_user(username).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("DB error: {}", e),
-        )
-    })?;
+    // Accounts are provisioned via CLI (`create-user`). Never create them
+    // from the network: otherwise anyone could squat usernames.
+    let user = state
+        .db
+        .get_user_by_username(username)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "ユーザーが存在しません。管理者に作成を依頼してください".to_string(),
+            )
+        })?;
 
     let user_id = uuid::Uuid::parse_str(&user.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
 
@@ -104,9 +124,25 @@ pub async fn register_start(
         .into_iter()
         .filter_map(|json| serde_json::from_str::<Passkey>(&json).ok())
         .map(|pk| pk.cred_id().clone())
-        .collect();
+        .collect::<Vec<_>>();
 
-    let (creation_challenge, reg_state) = state
+    // Adding a key to an account that already has keys requires a live
+    // session for that same account. A keyless account (fresh CLI user or
+    // right after `reset-passkey`) is open for first enrollment; losing all
+    // keys is recovered the same way (CLI reset, then enroll again).
+    if !exclude_credentials.is_empty() {
+        match session_user(&headers, &state.db) {
+            Some(u) if u.id == user.id => {}
+            _ => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "追加登録にはログインが必要です。先にパスキーでログインしてください".into(),
+                ));
+            }
+        }
+    }
+
+    let (mut creation_challenge, reg_state) = state
         .webauthn
         .start_passkey_registration(
             user_id,
@@ -120,6 +156,20 @@ pub async fn register_start(
                 format!("WebAuthn error: {:?}", e),
             )
         })?;
+
+    // webauthn-rs requests `residentKey: discouraged` here, which makes
+    // providers (e.g. Bitwarden) create server-side (non-discoverable)
+    // credentials. Those can never appear in usernameless login, so force
+    // client-side discoverable credentials. The stored registration state
+    // is unaffected (finish does not re-check this flag).
+    if let Some(sel) = creation_challenge
+        .public_key
+        .authenticator_selection
+        .as_mut()
+    {
+        sel.resident_key = Some(ResidentKeyRequirement::Required);
+        sel.require_resident_key = true;
+    }
 
     let challenge_id = uuid::Uuid::new_v4().to_string();
     let reg_json = serde_json::to_string(&reg_state).map_err(|e| {
@@ -152,6 +202,7 @@ pub async fn register_start(
 
 pub async fn register_finish(
     State(state): State<AuthState>,
+    headers: HeaderMap,
     Json(payload): Json<RegisterFinishRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let (reg_json, user_id) = state
@@ -172,6 +223,27 @@ pub async fn register_finish(
 
     let user_id =
         user_id.ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing user_id".to_string()))?;
+
+    // Re-check the enrollment gate here: whoever finishes second (a race
+    // against a concurrent enrollment, or a forged finish call) must hold
+    // a session once the account already has keys.
+    let existing = state.db.get_passkeys_for_user(&user_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB error: {}", e),
+        )
+    })?;
+    if !existing.is_empty() {
+        match session_user(&headers, &state.db) {
+            Some(u) if u.id == user_id => {}
+            _ => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "追加登録にはログインが必要です。先にパスキーでログインしてください".into(),
+                ));
+            }
+        }
+    }
 
     let reg_state: PasskeyRegistration = serde_json::from_str(&reg_json).map_err(|e| {
         (
@@ -247,27 +319,42 @@ pub async fn login_start(
     State(state): State<AuthState>,
     Json(payload): Json<LoginStartRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let mut passkeys: Vec<Passkey> = Vec::new();
     let mut target_user_id: Option<String> = None;
 
     if let Some(username) = payload.username {
         let username = username.trim();
-        if !username.is_empty()
-            && let Ok(user) = state.db.get_or_create_user(username)
-        {
+        if !username.is_empty() {
+            // Read-only: login must never create users (that would let
+            // anyone mint accounts by attempting a login). The username is
+            // only a hint here; the credential itself identifies the account.
+            let user = state
+                .db
+                .get_user_by_username(username)
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("DB error: {}", e),
+                    )
+                })?
+                .ok_or_else(|| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "ユーザーが存在しません".to_string(),
+                    )
+                })?;
             target_user_id = Some(user.id.clone());
-            let list = state.db.get_passkeys_for_user(&user.id).unwrap_or_default();
-            for json in list {
-                if let Ok(pk) = serde_json::from_str::<Passkey>(&json) {
-                    passkeys.push(pk);
-                }
-            }
         }
     }
 
+    // Discoverable (usernameless) flow: the browser offers every passkey
+    // registered for this RP, and the credential presented at finish
+    // identifies the account. NOTE: `finish_passkey_authentication` can not
+    // be used here: it verifies against credentials embedded in the start
+    // state, which is empty by design in this flow (that was the "selectable
+    // but always failing" bug).
     let (rc, auth_state) = state
         .webauthn
-        .start_passkey_authentication(&passkeys)
+        .start_discoverable_authentication()
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -313,7 +400,7 @@ pub async fn login_finish(
     State(state): State<AuthState>,
     Json(payload): Json<LoginFinishRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let (auth_json, maybe_user_id) = state
+    let (auth_json, _maybe_user_id) = state
         .db
         .get_and_delete_challenge(&payload.challenge_id)
         .map_err(|e| {
@@ -329,36 +416,49 @@ pub async fn login_finish(
             )
         })?;
 
-    let auth_state: PasskeyAuthentication = serde_json::from_str(&auth_json).map_err(|e| {
+    let auth_state: DiscoverableAuthentication = serde_json::from_str(&auth_json).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             format!("Malformed auth_state: {}", e),
         )
     })?;
 
-    let cred_id_b64 = payload.credential.id.clone();
-    let user: User = if let Some((u, _)) = state
-        .db
-        .find_user_by_credential_id(&cred_id_b64)
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("DB error: {}", e),
-            )
-        })? {
-        u
-    } else if let Some(uid) = maybe_user_id {
-        state.db.get_user_by_id(&uid).unwrap().unwrap()
-    } else {
-        return Err((
+    // The presented credential identifies the account. Resolve the stored
+    // key first via the user id inside the assertion (byte-exact), falling
+    // back to the credential id string.
+    let mut found: Option<(User, Passkey)> = None;
+    if let Ok((uuid, cred_id_bytes)) = state
+        .webauthn
+        .identify_discoverable_authentication(&payload.credential)
+        && let Ok(Some(user)) = state.db.get_user_by_id(&uuid.to_string())
+    {
+        let list = state.db.get_passkeys_for_user(&user.id).unwrap_or_default();
+        for json in list {
+            if let Ok(pk) = serde_json::from_str::<Passkey>(&json)
+                && pk.cred_id().as_ref() == cred_id_bytes
+            {
+                found = Some((user.clone(), pk));
+                break;
+            }
+        }
+    }
+    if found.is_none()
+        && let Ok(Some((u, pk_json))) = state.db.find_user_by_credential_id(&payload.credential.id)
+        && let Ok(pk) = serde_json::from_str::<Passkey>(&pk_json)
+    {
+        found = Some((u, pk));
+    }
+    let (user, passkey) = found.ok_or_else(|| {
+        (
             StatusCode::BAD_REQUEST,
-            "No passkey registered for this credential".into(),
-        ));
-    };
+            "No passkey registered for this credential".to_string(),
+        )
+    })?;
 
+    let key = DiscoverableKey::from(&passkey);
     let auth_res = state
         .webauthn
-        .finish_passkey_authentication(&payload.credential, &auth_state)
+        .finish_discoverable_authentication(&payload.credential, auth_state, &[key])
         .map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,

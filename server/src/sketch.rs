@@ -1,5 +1,5 @@
-use crate::auth::extract_session_token;
-use crate::db::Db;
+use crate::auth::session_user;
+use crate::db::{Db, User};
 use axum::{
     Json,
     extract::{Multipart, Path, State},
@@ -12,18 +12,34 @@ pub struct SketchState {
     pub db: Db,
 }
 
+/// All sketch endpoints require a login. Missing/invalid sessions get 401.
+fn require_login(headers: &HeaderMap, db: &Db) -> Result<User, (StatusCode, String)> {
+    session_user(headers, db)
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "ログインが必要です".to_string()))
+}
+
+/// Owner gate for a single sketch row.
+/// - nonexistent id -> 404 (same as wrong owner: existence is not leaked)
+/// - row owned by the caller -> allowed
+/// - legacy anonymous row (`user_id IS NULL`, created before login was
+///   required) -> allowed for any logged-in user (back-compat)
+fn owner_gate(db: &Db, id: i64, caller: &User) -> Result<(), (StatusCode, String)> {
+    let not_found = (StatusCode::NOT_FOUND, "Sketch not found".to_string());
+    match db.get_sketch_owner(id) {
+        Ok(Some(Some(owner))) if owner == caller.id => Ok(()),
+        Ok(Some(None)) => Ok(()),
+        _ => Err(not_found),
+    }
+}
+
 pub async fn upload_sketch(
     State(state): State<SketchState>,
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let current_user = if let Some(token) = extract_session_token(&headers) {
-        state.db.get_session_user(&token).unwrap_or(None)
-    } else {
-        None
-    };
+    let current_user = require_login(&headers, &state.db)?;
 
-    let user_id = current_user.map(|u| u.id);
+    let user_id = current_user.id.clone();
 
     let mut timer_duration_sec: i64 = 0;
     let mut created_at: Option<String> = None;
@@ -68,10 +84,19 @@ pub async fn upload_sketch(
     let thumb = thumbnail_data.unwrap_or_else(|| image.clone()); // fallback
     let date_str = created_at.unwrap_or_else(chrono_now);
 
+    // Idempotent re-upload: the client retries until the server confirms,
+    // and confirmation may arrive after the row was already stored.
+    if let Ok(Some(existing_id)) = state.db.find_sketch_by_time(&user_id, &date_str) {
+        return Ok(Json(serde_json::json!({
+            "success": true,
+            "id": existing_id
+        })));
+    }
+
     let sketch_id = state
         .db
         .save_sketch(
-            user_id.as_deref(),
+            Some(&user_id),
             timer_duration_sec,
             &date_str,
             &image,
@@ -94,27 +119,28 @@ pub async fn list_sketches(
     State(state): State<SketchState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let current_user = if let Some(token) = extract_session_token(&headers) {
-        state.db.get_session_user(&token).unwrap_or(None)
-    } else {
-        None
-    };
+    let current_user = require_login(&headers, &state.db)?;
 
-    let user_id = current_user.map(|u| u.id);
-    let list = state.db.list_sketches(user_id.as_deref()).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("DB error: {}", e),
-        )
-    })?;
+    let list = state
+        .db
+        .list_sketches(Some(&current_user.id))
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB error: {}", e),
+            )
+        })?;
 
     Ok(Json(list))
 }
 
 pub async fn get_sketch_image(
     State(state): State<SketchState>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let current_user = require_login(&headers, &state.db)?;
+    owner_gate(&state.db, id, &current_user)?;
     let img = state
         .db
         .get_sketch_image(id)
@@ -137,8 +163,11 @@ pub async fn get_sketch_image(
 
 pub async fn get_sketch_thumbnail(
     State(state): State<SketchState>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let current_user = require_login(&headers, &state.db)?;
+    owner_gate(&state.db, id, &current_user)?;
     let thumb = state
         .db
         .get_sketch_thumbnail(id)
@@ -161,8 +190,11 @@ pub async fn get_sketch_thumbnail(
 
 pub async fn delete_sketch(
     State(state): State<SketchState>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let current_user = require_login(&headers, &state.db)?;
+    owner_gate(&state.db, id, &current_user)?;
     let deleted = state.db.delete_sketch(id).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

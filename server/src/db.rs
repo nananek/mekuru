@@ -131,6 +131,25 @@ impl Db {
         }
     }
 
+    /// Read-only lookup by username. HTTP handlers must use this instead of
+    /// `get_or_create_user`: accounts are provisioned via CLI, never from
+    /// the network (otherwise anyone could squat usernames).
+    pub fn get_user_by_username(&self, username: &str) -> Result<Option<User>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT id, username, created_at FROM users WHERE username = ?1")?;
+        let mut rows = stmt.query(params![username])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(User {
+                id: row.get(0)?,
+                username: row.get(1)?,
+                created_at: row.get(2)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn list_users(&self) -> Result<Vec<(User, usize)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -393,6 +412,33 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let deleted = conn.execute("DELETE FROM sketches WHERE id = ?1", params![id])?;
         Ok(deleted > 0)
+    }
+
+    /// Existing sketch id for (user, created_at), for idempotent re-uploads.
+    pub fn find_sketch_by_time(&self, user_id: &str, created_at: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT id FROM sketches WHERE user_id = ?1 AND created_at = ?2 LIMIT 1")?;
+        let mut rows = stmt.query(params![user_id, created_at])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Owner of a sketch for authorization checks.
+    /// `Ok(None)` = no such sketch; `Ok(Some(uid))` with `uid == None` =
+    /// legacy anonymous row (created before login was required).
+    pub fn get_sketch_owner(&self, id: i64) -> Result<Option<Option<String>>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT user_id FROM sketches WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
     }
 }
 

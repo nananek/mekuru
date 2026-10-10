@@ -58,7 +58,15 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets -- -D warnings
+        run: |
+          if ! cargo clippy --all-targets -- -D warnings; then
+            OUTPUT=$(cargo clippy --all-targets -- -D warnings 2>&1)
+            ESCAPED="${OUTPUT//'%'/'%25'}"
+            ESCAPED="${ESCAPED//$'\n'/'%0A'}"
+            ESCAPED="${ESCAPED//$'\r'/'%0D'}"
+            echo "::error title=ClippyError::$ESCAPED"
+            exit 1
+          fi
 
       - name: Tests
         run: cargo test --locked

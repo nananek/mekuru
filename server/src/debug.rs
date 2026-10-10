@@ -240,9 +240,9 @@ pub async fn get_latest_debug_stroke(
         })?;
 
     let points: serde_json::Value =
-        serde_json::from_str(&stroke.points_json).unwrap_or(serde_json::json!([]));
+        serde_json::from_str(&stroke.points_json).unwrap_or_else(|_| serde_json::json!([]));
     let metadata: serde_json::Value =
-        serde_json::from_str(&stroke.metadata_json).unwrap_or(serde_json::json!({}));
+        serde_json::from_str(&stroke.metadata_json).unwrap_or_else(|_| serde_json::json!({}));
 
     Ok(Json(serde_json::json!({
         "id": stroke.id,
@@ -268,9 +268,9 @@ pub async fn get_debug_stroke(
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Debug stroke not found".to_string()))?;
 
     let points: serde_json::Value =
-        serde_json::from_str(&stroke.points_json).unwrap_or(serde_json::json!([]));
+        serde_json::from_str(&stroke.points_json).unwrap_or_else(|_| serde_json::json!([]));
     let metadata: serde_json::Value =
-        serde_json::from_str(&stroke.metadata_json).unwrap_or(serde_json::json!({}));
+        serde_json::from_str(&stroke.metadata_json).unwrap_or_else(|_| serde_json::json!({}));
 
     Ok(Json(serde_json::json!({
         "id": stroke.id,

@@ -1,15 +1,15 @@
-use crate::db::{chrono_now, Db};
+use crate::db::{Db, chrono_now};
 use axum::{
-    extract::{Multipart, Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
-    response::IntoResponse,
     Json,
+    extract::{Multipart, Path, Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct RenderJob {
@@ -101,9 +101,7 @@ pub async fn save_debug_stroke_json(
     State(state): State<DebugState>,
     Json(payload): Json<SaveStrokePayload>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let id = payload
-        .id
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let id = payload.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono_now();
 
     let point_count = match &payload.points {
@@ -394,9 +392,7 @@ pub async fn render_stroke(
         let mut bridge = state.bridge.lock().await;
 
         // Check if a browser has polled recently (within last 8 seconds)
-        let is_bridge_active = bridge
-            .last_poll
-            .is_some_and(|t| t.elapsed() < Duration::from_secs(8));
+        let is_bridge_active = bridge.last_poll.is_some_and(|t| t.elapsed() < Duration::from_secs(8));
 
         if !is_bridge_active {
             return Err((
@@ -415,10 +411,7 @@ pub async fn render_stroke(
     match render_result {
         Ok(Ok(image_bytes)) => {
             let now = chrono_now();
-            let point_count = payload
-                .points
-                .as_array()
-                .map_or(0, |a| a.len() as i64);
+            let point_count = payload.points.as_array().map_or(0, |a| a.len() as i64);
             let label = payload.label.as_deref().unwrap_or("live_render");
 
             let _ = state.db.save_debug_stroke(
@@ -495,10 +488,7 @@ pub async fn bridge_response(
             let _ = tx.send(bytes);
             return Ok(Json(serde_json::json!({ "success": true })));
         } else {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "Invalid image base64 format".to_string(),
-            ));
+            return Err((StatusCode::BAD_REQUEST, "Invalid image base64 format".to_string()));
         }
     }
 
@@ -511,9 +501,7 @@ pub async fn bridge_response(
 /// Get debug server status and bridge state
 pub async fn debug_status(State(state): State<DebugState>) -> impl IntoResponse {
     let bridge = state.bridge.lock().await;
-    let is_connected = bridge
-        .last_poll
-        .is_some_and(|t| t.elapsed() < Duration::from_secs(8));
+    let is_connected = bridge.last_poll.is_some_and(|t| t.elapsed() < Duration::from_secs(8));
 
     let queue_len = bridge.render_queue.len();
     let pending_len = bridge.pending_renders.len();

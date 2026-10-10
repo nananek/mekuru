@@ -101,7 +101,9 @@ pub async fn save_debug_stroke_json(
     State(state): State<DebugState>,
     Json(payload): Json<SaveStrokePayload>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let id = payload.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let id = payload
+        .id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono_now();
 
     let point_count = match &payload.points {
@@ -490,7 +492,10 @@ pub async fn bridge_response(
             let _ = tx.send(bytes);
             return Ok(Json(serde_json::json!({ "success": true })));
         } else {
-            return Err((StatusCode::BAD_REQUEST, "Invalid image base64 format".to_string()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Invalid image base64 format".to_string(),
+            ));
         }
     }
 
@@ -503,7 +508,9 @@ pub async fn bridge_response(
 /// Get debug server status and bridge state
 pub async fn debug_status(State(state): State<DebugState>) -> impl IntoResponse {
     let bridge = state.bridge.lock().await;
-    let is_connected = bridge.last_poll.is_some_and(|t| t.elapsed() < Duration::from_secs(8));
+    let is_connected = bridge
+        .last_poll
+        .is_some_and(|t| t.elapsed() < Duration::from_secs(8));
 
     let queue_len = bridge.render_queue.len();
     let pending_len = bridge.pending_renders.len();

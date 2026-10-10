@@ -55,19 +55,7 @@ jobs:
           workspaces: server
 
       - name: Check formatting
-        run: |
-          if ! cargo fmt --all -- --check; then
-            cargo fmt --all
-            DIFF=$(git diff)
-            ESCAPED="${DIFF//'%'/'%25'}"
-            ESCAPED="${ESCAPED//$'\n'/'%0A'}"
-            ESCAPED="${ESCAPED//$'\r'/'%0D'}"
-            echo "::error title=RustfmtDiff::$ESCAPED"
-            git diff | while IFS= read -r line; do
-              echo "::notice title=FmtDiff::$line"
-            done
-            exit 1
-          fi
+        run: cargo fmt --all -- --check
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings

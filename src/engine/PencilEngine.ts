@@ -26,6 +26,8 @@ export class PencilEngine {
   private isDrawing: boolean = false;
   private activePointerId: number | null = null;
   private lastPoint: Point | null = null;
+  private currentDrawPoint: { x: number; y: number } | null = null;
+  private smoothedPressure: number = 0.5;
   private strokeCount: number = 0;
 
   private undoManager: UndoManager;
@@ -47,6 +49,8 @@ export class PencilEngine {
     if (!context) {
       throw new Error('Could not get 2d context for canvas');
     }
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
     this.ctx = context;
 
     this.undoManager = new UndoManager(25);
@@ -165,6 +169,8 @@ export class PencilEngine {
 
     const pt = this.extractPoint(e);
     this.lastPoint = pt;
+    this.currentDrawPoint = { x: pt.x, y: pt.y };
+    this.smoothedPressure = pt.pressure;
 
     // Stamp initial contact dot
     this.drawPencilDot(pt);
@@ -188,8 +194,8 @@ export class PencilEngine {
     for (let i = 0; i < coalescedEvents.length; i++) {
       const subEvent = coalescedEvents[i];
       const pt = this.extractPoint(subEvent);
-      if (this.lastPoint) {
-        this.drawPencilSegment(this.lastPoint, pt);
+      if (this.lastPoint && this.currentDrawPoint) {
+        this.drawPencilCurveSegment(this.lastPoint, pt);
       }
       this.lastPoint = pt;
     }
@@ -205,9 +211,16 @@ export class PencilEngine {
       if (this.canvas.hasPointerCapture(e.pointerId)) {
         this.canvas.releasePointerCapture(e.pointerId);
       }
+
+      // Finalize the last remaining line segment to the release point
+      if (this.lastPoint && this.currentDrawPoint) {
+        this.finishStrokeSegment(this.currentDrawPoint, this.lastPoint);
+      }
+
       this.isDrawing = false;
       this.activePointerId = null;
       this.lastPoint = null;
+      this.currentDrawPoint = null;
       this.strokeCount++;
 
       this.options.onStrokeEnd?.();
@@ -225,6 +238,7 @@ export class PencilEngine {
       this.isDrawing = false;
       this.activePointerId = null;
       this.lastPoint = null;
+      this.currentDrawPoint = null;
     }
   }
 
@@ -255,51 +269,154 @@ export class PencilEngine {
    * Draws a pencil dot at initial contact
    */
   private drawPencilDot(pt: Point): void {
-    const radius = Math.max(1, this.baseRadius * this.dpr * (0.4 + pt.pressure * 1.6));
-    const stamp = PencilTexture.createStamp(radius, pt.altitudeAngle);
+    const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + pt.pressure * 1.5));
+    const isShading = pt.altitudeAngle < 0.38;
 
     this.ctx.save();
     this.ctx.globalCompositeOperation = 'multiply';
-    this.ctx.globalAlpha = Math.min(1.0, 0.4 + pt.pressure * 0.6);
-    this.ctx.drawImage(stamp, pt.x - stamp.width / 2, pt.y - stamp.height / 2);
+
+    if (isShading) {
+      const stamp = PencilTexture.createStamp(radius, pt.altitudeAngle);
+      this.ctx.globalAlpha = Math.min(0.65, 0.25 + pt.pressure * 0.4);
+      this.ctx.translate(pt.x, pt.y);
+      const angle = pt.azimuthAngle ? pt.azimuthAngle + Math.PI / 2 : 0;
+      this.ctx.rotate(angle);
+      this.ctx.drawImage(stamp, -stamp.width / 2, -stamp.height / 2);
+    } else {
+      // 1. Soft graphite feathered edge (antialiasing bloom)
+      this.ctx.beginPath();
+      this.ctx.arc(pt.x, pt.y, radius * 1.2, 0, Math.PI * 2);
+      this.ctx.fillStyle = '#222222';
+      this.ctx.globalAlpha = Math.min(0.25, 0.10 + pt.pressure * 0.15);
+      this.ctx.fill();
+
+      // 2. High-precision antialiased dark graphite core
+      this.ctx.beginPath();
+      this.ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+      this.ctx.fillStyle = '#121212';
+      this.ctx.globalAlpha = Math.min(1.0, 0.70 + pt.pressure * 0.30);
+      this.ctx.fill();
+    }
+
     this.ctx.restore();
   }
 
   /**
-   * Draws interpolated pencil strokes with realistic spacing and graphite grain
+   * Smoothly draws a pencil curve segment using Midpoint Quadratic Bezier interpolation
+   * with dual-pass antialiasing and graphite texture
    */
-  private drawPencilSegment(p0: Point, p1: Point): void {
-    const dx = p1.x - p0.x;
-    const dy = p1.y - p0.y;
+  private drawPencilCurveSegment(pPrev: Point, pNext: Point): void {
+    const dx = pNext.x - pPrev.x;
+    const dy = pNext.y - pPrev.y;
     const dist = Math.hypot(dx, dy);
 
-    if (dist === 0) return;
+    if (dist < 0.1) return;
 
-    // Interpolation step based on radius (closer steps for finer lines)
-    const avgPressure = (p0.pressure + p1.pressure) / 2;
-    const avgAltitude = (p0.altitudeAngle + p1.altitudeAngle) / 2;
-    const radius = Math.max(1, this.baseRadius * this.dpr * (0.4 + avgPressure * 1.6));
+    // Smooth pressure transitions to eliminate step artifacts
+    this.smoothedPressure = this.smoothedPressure * 0.6 + pNext.pressure * 0.4;
+    const avgAltitude = (pPrev.altitudeAngle + pNext.altitudeAngle) / 2;
+    const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + this.smoothedPressure * 1.5));
 
-    // For tilt shading: step is larger, stamp is wider
-    const isShading = avgAltitude < 0.65;
-    const stepSize = isShading ? Math.max(2, radius * 0.8) : Math.max(1.2, radius * 0.35);
-    const steps = Math.max(1, Math.ceil(dist / stepSize));
+    // Calculate midpoint between previous point and current point
+    const midX = (pPrev.x + pNext.x) / 2;
+    const midY = (pPrev.y + pNext.y) / 2;
 
-    const stamp = PencilTexture.createStamp(radius, avgAltitude);
-    const baseAlpha = isShading
-      ? (0.15 + avgPressure * 0.25) // diffuse shading
-      : (0.35 + avgPressure * 0.65); // crisp line
+    const startX = this.currentDrawPoint ? this.currentDrawPoint.x : pPrev.x;
+    const startY = this.currentDrawPoint ? this.currentDrawPoint.y : pPrev.y;
+
+    const isShading = avgAltitude < 0.38;
 
     this.ctx.save();
     this.ctx.globalCompositeOperation = 'multiply';
-    this.ctx.globalAlpha = Math.min(1.0, baseAlpha);
 
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const x = p0.x + dx * t;
-      const y = p0.y + dy * t;
-      this.ctx.drawImage(stamp, x - stamp.width / 2, y - stamp.height / 2);
+    if (isShading) {
+      // Tilt Shading: broad graphite smudge aligned with pen tilt / stroke
+      const stamp = PencilTexture.createStamp(radius, avgAltitude);
+      this.ctx.globalAlpha = Math.min(0.65, 0.25 + this.smoothedPressure * 0.4);
+
+      const avgAzimuth = (pPrev.azimuthAngle + pNext.azimuthAngle) / 2;
+      const angle = avgAzimuth ? avgAzimuth + Math.PI / 2 : Math.atan2(dy, dx) + Math.PI / 2;
+
+      const stepSize = Math.max(1.5, radius * 0.35);
+      const steps = Math.max(1, Math.ceil(dist / stepSize));
+
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const invT = 1 - t;
+        const x = invT * invT * startX + 2 * invT * t * pPrev.x + t * t * midX;
+        const y = invT * invT * startY + 2 * invT * t * pPrev.y + t * t * midY;
+
+        this.ctx.save();
+        this.ctx.translate(x, y);
+        this.ctx.rotate(angle);
+        this.ctx.drawImage(stamp, -stamp.width / 2, -stamp.height / 2);
+        this.ctx.restore();
+      }
+    } else {
+      // Normal Line Mode: Dual-pass antialiased Quadratic Bezier curve
+      // Pass 1: Soft feathering halo (prevents harsh staircases while preserving graphite look)
+      this.ctx.beginPath();
+      this.ctx.moveTo(startX, startY);
+      this.ctx.quadraticCurveTo(pPrev.x, pPrev.y, midX, midY);
+      this.ctx.lineCap = 'round';
+      this.ctx.lineJoin = 'round';
+      this.ctx.lineWidth = radius * 2.3;
+      this.ctx.strokeStyle = '#222222';
+      this.ctx.globalAlpha = Math.min(0.25, 0.10 + this.smoothedPressure * 0.15);
+      this.ctx.stroke();
+
+      // Pass 2: High-contrast solid core with native subpixel antialiasing
+      this.ctx.beginPath();
+      this.ctx.moveTo(startX, startY);
+      this.ctx.quadraticCurveTo(pPrev.x, pPrev.y, midX, midY);
+      this.ctx.lineCap = 'round';
+      this.ctx.lineJoin = 'round';
+      this.ctx.lineWidth = radius * 2.0;
+      this.ctx.strokeStyle = '#121212';
+      this.ctx.globalAlpha = Math.min(1.0, 0.70 + this.smoothedPressure * 0.30);
+      this.ctx.stroke();
     }
+
+    this.ctx.restore();
+
+    // Advance drawing cursor to midpoint
+    this.currentDrawPoint = { x: midX, y: midY };
+  }
+
+  /**
+   * Finalizes the stroke from the last midpoint to the final release point
+   */
+  private finishStrokeSegment(startPt: { x: number; y: number }, endPt: Point): void {
+    const avgPressure = this.smoothedPressure;
+    const radius = Math.max(1, this.baseRadius * this.dpr * (0.5 + avgPressure * 1.5));
+    const isShading = endPt.altitudeAngle < 0.38;
+
+    if (isShading) return;
+
+    this.ctx.save();
+    this.ctx.globalCompositeOperation = 'multiply';
+
+    // Soft feathering halo
+    this.ctx.beginPath();
+    this.ctx.moveTo(startPt.x, startPt.y);
+    this.ctx.lineTo(endPt.x, endPt.y);
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
+    this.ctx.lineWidth = radius * 2.3;
+    this.ctx.strokeStyle = '#222222';
+    this.ctx.globalAlpha = Math.min(0.25, 0.10 + avgPressure * 0.15);
+    this.ctx.stroke();
+
+    // Solid core line
+    this.ctx.beginPath();
+    this.ctx.moveTo(startPt.x, startPt.y);
+    this.ctx.lineTo(endPt.x, endPt.y);
+    this.ctx.lineCap = 'round';
+    this.ctx.lineJoin = 'round';
+    this.ctx.lineWidth = radius * 2.0;
+    this.ctx.strokeStyle = '#121212';
+    this.ctx.globalAlpha = Math.min(1.0, 0.70 + avgPressure * 0.30);
+    this.ctx.stroke();
 
     this.ctx.restore();
   }

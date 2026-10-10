@@ -58,13 +58,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (deny warnings)
-        run: |
-          if ! cargo clippy --all-targets -- -D warnings; then
-            cargo clippy --all-targets -- -D warnings 2>&1 | head -n 30 | while IFS= read -r line; do
-              echo "::notice title=ClippyLine::$line"
-            done
-            exit 1
-          fi
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Tests
         run: cargo test --locked

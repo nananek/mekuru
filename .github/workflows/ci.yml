@@ -57,11 +57,15 @@ jobs:
       - name: Check formatting
         run: |
           if ! cargo fmt --all -- --check; then
-            echo "### Rustfmt Diff" >> $GITHUB_STEP_SUMMARY
-            echo '```diff' >> $GITHUB_STEP_SUMMARY
             cargo fmt --all
-            git diff >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            DIFF=$(git diff)
+            ESCAPED="${DIFF//'%'/'%25'}"
+            ESCAPED="${ESCAPED//$'\n'/'%0A'}"
+            ESCAPED="${ESCAPED//$'\r'/'%0D'}"
+            echo "::error title=RustfmtDiff::$ESCAPED"
+            git diff | while IFS= read -r line; do
+              echo "::notice title=FmtDiff::$line"
+            done
             exit 1
           fi
 

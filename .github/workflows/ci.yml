@@ -60,11 +60,9 @@ jobs:
       - name: Clippy (deny warnings)
         run: |
           if ! cargo clippy --all-targets -- -D warnings; then
-            OUTPUT=$(cargo clippy --all-targets -- -D warnings 2>&1)
-            ESCAPED="${OUTPUT//'%'/'%25'}"
-            ESCAPED="${ESCAPED//$'\n'/'%0A'}"
-            ESCAPED="${ESCAPED//$'\r'/'%0D'}"
-            echo "::error title=ClippyError::$ESCAPED"
+            cargo clippy --all-targets -- -D warnings 2>&1 | head -n 30 | while IFS= read -r line; do
+              echo "::notice title=ClippyLine::$line"
+            done
             exit 1
           fi
 
